@@ -57,8 +57,11 @@ local state = {
     configRows = {},
     configAddButton = nil,
     configCloseButton = nil,
+    minimapButton = nil,
 }
 
+local ensureMainFrame
+local showMainFrame
 local showConfigFrame
 
 local function makeStorageKey()
@@ -133,6 +136,14 @@ local function ensureCharacterStorage()
     storage.mainSize = storage.mainSize or {
         width = MAIN_FRAME_WIDTH,
         height = 340,
+    }
+    if storage.mainVisible == nil then
+        storage.mainVisible = true
+    end
+    storage.minimap = storage.minimap or {
+        visible = true,
+        position = 225,
+        distance = 1,
     }
     storage.bankCounts = type(storage.bankCounts) == "table" and storage.bankCounts or {}
 
@@ -912,7 +923,159 @@ local function saveMainFrameSize(frame)
     storage.mainSize.height = math.floor((frame:GetHeight() or 340) + 0.5)
 end
 
-local function ensureMainFrame()
+local function setMainFrameVisible(visible)
+    local storage = ensureCharacterStorage()
+    storage.mainVisible = visible and true or false
+
+    local frame = state.mainFrame
+    if not frame then
+        return
+    end
+
+    if visible then
+        frame:Show()
+    else
+        frame:Hide()
+    end
+end
+
+local function atan2Compat(y, x)
+    if type(math.atan2) == "function" then
+        return math.atan2(y, x)
+    end
+
+    return math.atan(y, x)
+end
+
+local function saveMinimapPosition(button)
+    local storage = ensureCharacterStorage()
+    storage.minimap = storage.minimap or {}
+
+    local mx, my = Minimap:GetCenter()
+    local bx, by = button:GetCenter()
+    if not mx or not my or not bx or not by then
+        return
+    end
+
+    local scale = Minimap:GetEffectiveScale()
+    local px = bx * scale
+    local py = by * scale
+    local centerX = mx * scale
+    local centerY = my * scale
+    local dx = px - centerX
+    local dy = py - centerY
+
+    storage.minimap.position = math.deg(atan2Compat(dy, dx)) % 360
+    storage.minimap.distance = 1
+end
+
+local function updateMinimapButtonPosition()
+    local button = state.minimapButton
+    if not button then
+        return
+    end
+
+    local storage = ensureCharacterStorage()
+    local minimap = storage.minimap or {}
+    local angle = math.rad(minimap.position or 225)
+    local distance = minimap.distance or 1
+    local radius = (Minimap:GetWidth() / 2) + 5
+    local x = math.cos(angle) * radius * distance
+    local y = math.sin(angle) * radius * distance
+
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "CENTER", x, y)
+
+    if minimap.visible ~= false then
+        button:Show()
+    else
+        button:Hide()
+    end
+end
+
+local function ensureMinimapButton()
+    if state.minimapButton then
+        return state.minimapButton
+    end
+
+    local button = CreateFrame("Button", addonName .. "MinimapButton", Minimap)
+    button:SetSize(31, 31)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(8)
+    button:RegisterForClicks("AnyUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetClampedToScreen(true)
+    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    local border = button:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetPoint("TOPLEFT")
+
+    local background = button:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(20, 20)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetPoint("TOPLEFT", 7, -5)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(17, 17)
+    icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_02")
+    icon:SetPoint("TOPLEFT", 7, -6)
+
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Elysium Consumables List")
+        GameTooltip:AddLine("Left-click: toggle window", 1, 1, 1)
+        GameTooltip:AddLine("Right-click: open config", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    button:SetScript("OnClick", function(_, mouseButton)
+        if mouseButton == "RightButton" then
+            showConfigFrame()
+        else
+            local frame = state.mainFrame or ensureMainFrame()
+            if frame and frame:IsShown() then
+                setMainFrameVisible(false)
+            else
+                showMainFrame()
+            end
+        end
+    end)
+    button:SetScript("OnDragStart", function(self)
+        self:LockHighlight()
+        self.isDragging = true
+        self:SetScript("OnUpdate", function()
+            local mx, my = Minimap:GetCenter()
+            local px, py = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            px, py = px / scale, py / scale
+            local dx = px - mx
+            local dy = py - my
+            local angle = math.deg(atan2Compat(dy, dx)) % 360
+            local storage = ensureCharacterStorage()
+            storage.minimap = storage.minimap or {}
+            storage.minimap.position = angle
+            storage.minimap.distance = 1
+            updateMinimapButtonPosition()
+        end)
+    end)
+    button:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+        self:UnlockHighlight()
+        self.isDragging = false
+        saveMinimapPosition(self)
+        updateMinimapButtonPosition()
+    end)
+
+    state.minimapButton = button
+    updateMinimapButtonPosition()
+    return button
+end
+
+ensureMainFrame = function()
     if state.mainFrame then
         return state.mainFrame
     end
@@ -1003,7 +1166,7 @@ local function ensureMainFrame()
     close:SetSize(20, 20)
     close:SetPoint("TOPRIGHT", -2, -2)
     close:SetScript("OnClick", function()
-        frame:Hide()
+        setMainFrameVisible(false)
     end)
     state.mainClose = close
 
@@ -1348,16 +1511,14 @@ function refreshConfigFrame()
     state.configScrollFrame:SetVerticalScroll(0)
 end
 
-local function showMainFrame()
+showMainFrame = function()
     local frame = ensureMainFrame()
     refreshMainFrame()
-    frame:Show()
+    setMainFrameVisible(true)
 end
 
 local function hideMainFrame()
-    if state.mainFrame then
-        state.mainFrame:Hide()
-    end
+    setMainFrameVisible(false)
 end
 
 showConfigFrame = function()
@@ -1428,9 +1589,15 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
 
     if event == "PLAYER_LOGIN" then
         ensureCharacterStorage()
+        ensureMinimapButton()
         ensureMainFrame()
         ensureConfigFrame()
         refreshMainFrame()
+        if ensureCharacterStorage().mainVisible == true then
+            setMainFrameVisible(true)
+        else
+            setMainFrameVisible(false)
+        end
         return
     end
 
