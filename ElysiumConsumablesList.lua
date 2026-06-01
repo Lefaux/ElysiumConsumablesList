@@ -1636,6 +1636,8 @@ function ensureConfigFrame()
         refreshConfigFrame()
     end)
 
+    frame:Hide()
+
     state.configFrame = frame
 
     if InterfaceOptions_AddCategory then
@@ -1757,6 +1759,9 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         ensureMinimapButton()
         ensureMainFrame()
         ensureConfigFrame()
+        if state.configFrame then
+            state.configFrame:Hide()
+        end
         refreshMainFrame()
         if ensureCharacterStorage().mainVisible == true then
             setMainFrameVisible(true)
