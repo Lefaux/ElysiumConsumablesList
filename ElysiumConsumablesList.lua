@@ -20,6 +20,9 @@ local NUM_BAG_SLOTS = 4
 local DEFAULT_ROWS = 1
 local MAIN_FRAME_WIDTH = 640
 local MAIN_BODY_WIDTH = 600
+local MAIN_MIN_WIDTH = 620
+local MAIN_MIN_HEIGHT = 240
+local RESIZE_GRIP_SIZE = 16
 local CONFIG_FRAME_WIDTH = 760
 local CONFIG_FRAME_HEIGHT = 520
 local ROW_HEIGHT = 20
@@ -43,6 +46,8 @@ local state = {
     mainTitle = nil,
     mainBody = nil,
     mainHeader = nil,
+    mainScrollFrame = nil,
+    mainScrollChild = nil,
     mainRows = {},
     mainClose = nil,
     mainConfigButton = nil,
@@ -124,6 +129,10 @@ local function ensureCharacterStorage()
         relativePoint = DEFAULT_CONFIG_POINT.relativePoint,
         x = DEFAULT_CONFIG_POINT.x,
         y = DEFAULT_CONFIG_POINT.y,
+    }
+    storage.mainSize = storage.mainSize or {
+        width = MAIN_FRAME_WIDTH,
+        height = 340,
     }
     storage.bankCounts = type(storage.bankCounts) == "table" and storage.bankCounts or {}
 
@@ -587,14 +596,14 @@ getBagCountForItem = function(itemId, includeBank)
 end
 
 local function ensureMainRows(count)
-    local frame = state.mainFrame
-    if not frame then
+    local child = state.mainScrollChild
+    if not child then
         return
     end
 
     while #state.mainRows < count do
         local index = #state.mainRows + 1
-        local row = CreateFrame("Frame", nil, frame)
+        local row = CreateFrame("Frame", nil, child)
         row:SetHeight(ROW_HEIGHT)
         row:SetWidth(MAIN_BODY_WIDTH)
 
@@ -781,46 +790,46 @@ local function buildSummaryText(stats)
     return string.format("|cff00ff00%d configured|r, |cffffff00%d in bank|r, |cffff5555%d need attention|r", stats.enabledItems, stats.yellowItems, stats.pendingItems)
 end
 
-local function layoutMainFrame(rowCount)
+local function layoutMainFrame()
     local frame = state.mainFrame
     local title = state.mainTitle
     local body = state.mainBody
     local header = state.mainHeader
+    local scrollFrame = state.mainScrollFrame
+    local scrollChild = state.mainScrollChild
 
-    if not frame or not title or not body or not header then
+    if not frame or not title or not body or not header or not scrollFrame or not scrollChild or not state.mainConfigButton then
         return
     end
+
+    local usableWidth = math.max(MAIN_BODY_WIDTH, frame:GetWidth() - 40)
 
     title:ClearAllPoints()
     title:SetPoint("TOPLEFT", 14, -12)
 
     body:ClearAllPoints()
     body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-    body:SetWidth(MAIN_BODY_WIDTH)
+    body:SetWidth(usableWidth)
 
-    local bodyHeight = math.max(18, body:GetStringHeight() or 0)
     header:ClearAllPoints()
     header:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
-    header:SetWidth(MAIN_BODY_WIDTH)
+    header:SetWidth(usableWidth)
 
-    local currentTopAnchor = header
-    local currentTopOffsetY = 0
+    scrollFrame:ClearAllPoints()
+    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 40)
+    local scrollWidth = math.max(MAIN_BODY_WIDTH, (frame:GetWidth() or MAIN_BODY_WIDTH) - 44)
+    scrollChild:SetWidth(scrollWidth)
 
     for index, row in ipairs(state.mainRows) do
         row:ClearAllPoints()
-        if index <= rowCount then
-            row:SetPoint("TOPLEFT", currentTopAnchor, "BOTTOMLEFT", 0, currentTopOffsetY)
-            row:SetPoint("TOPRIGHT", header, "TOPRIGHT", 0, 0)
-            currentTopAnchor = row
-            currentTopOffsetY = 0
-            row:Show()
-        else
-            row:Hide()
-        end
+        row:SetWidth(scrollWidth)
+        row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
+        row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, 0)
     end
 
-    local totalHeight = 12 + 26 + bodyHeight + 8 + MAIN_HEADER_HEIGHT + (rowCount * ROW_HEIGHT) + 18
-    frame:SetSize(MAIN_FRAME_WIDTH, math.max(140, math.ceil(totalHeight)))
+    local contentHeight = math.max(ROW_HEIGHT, (state.mainVisibleRowCount or 0) * ROW_HEIGHT)
+    scrollChild:SetHeight(contentHeight)
 end
 
 local function refreshMainFrame()
@@ -832,6 +841,7 @@ local function refreshMainFrame()
     local storage = ensureCharacterStorage()
     refreshBankCache(storage)
     local rows, stats = collectMainRows(storage)
+    state.mainVisibleRowCount = #rows
 
     state.mainBody:SetText(buildSummaryText(stats))
 
@@ -855,7 +865,7 @@ local function refreshMainFrame()
         state.mainHeader:Hide()
     end
 
-    layoutMainFrame(#rows)
+    layoutMainFrame()
 end
 
 local function getSavedMainPoint(storage)
@@ -895,6 +905,13 @@ local function saveFramePoint(frame, targetKey)
     storage[targetKey] = record
 end
 
+local function saveMainFrameSize(frame)
+    local storage = ensureCharacterStorage()
+    storage.mainSize = storage.mainSize or {}
+    storage.mainSize.width = math.floor((frame:GetWidth() or MAIN_FRAME_WIDTH) + 0.5)
+    storage.mainSize.height = math.floor((frame:GetHeight() or 340) + 0.5)
+end
+
 local function ensureMainFrame()
     if state.mainFrame then
         return state.mainFrame
@@ -902,6 +919,8 @@ local function ensureMainFrame()
 
     local storage = ensureCharacterStorage()
     local frame = CreateFrame("Frame", addonName .. "Frame", UIParent, "BackdropTemplate")
+    local savedSize = storage.mainSize or {}
+    frame:SetSize(savedSize.width or MAIN_FRAME_WIDTH, savedSize.height or 340)
     frame:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
@@ -914,10 +933,20 @@ local function ensureMainFrame()
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
+    frame:SetResizable(true)
+    if frame.SetResizeBounds then
+        frame:SetResizeBounds(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+    elseif frame.SetMinResize then
+        frame:SetMinResize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+    end
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         saveFramePoint(self, "point")
+    end)
+    frame:SetScript("OnSizeChanged", function(self)
+        saveMainFrameSize(self)
+        layoutMainFrame()
     end)
 
     local point, relativePoint, x, y = getSavedMainPoint(storage)
@@ -960,6 +989,16 @@ local function ensureMainFrame()
     sourceHeader:SetWidth(80)
     sourceHeader:SetText("Source")
 
+    local scrollFrame = CreateFrame("ScrollFrame", addonName .. "MainScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 40)
+    state.mainScrollFrame = scrollFrame
+
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetSize(MAIN_BODY_WIDTH, ROW_HEIGHT)
+    scrollFrame:SetScrollChild(scrollChild)
+    state.mainScrollChild = scrollChild
+
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetSize(20, 20)
     close:SetPoint("TOPRIGHT", -2, -2)
@@ -977,8 +1016,26 @@ local function ensureMainFrame()
     end)
     state.mainConfigButton = configButton
 
+    local resizeGrip = CreateFrame("Button", nil, frame)
+    resizeGrip:SetSize(RESIZE_GRIP_SIZE, RESIZE_GRIP_SIZE)
+    resizeGrip:SetPoint("BOTTOMRIGHT", -2, 2)
+    resizeGrip:EnableMouse(true)
+    resizeGrip:RegisterForDrag("LeftButton")
+    resizeGrip:SetScript("OnDragStart", function()
+        frame:StartSizing("BOTTOMRIGHT")
+    end)
+    resizeGrip:SetScript("OnDragStop", function()
+        frame:StopMovingOrSizing()
+        saveMainFrameSize(frame)
+        layoutMainFrame()
+    end)
+    local gripTexture = resizeGrip:CreateTexture(nil, "ARTWORK")
+    gripTexture:SetAllPoints()
+    gripTexture:SetTexture("Interface\\CHATFRAME\\UI-ChatIM-SizeGrabber-Up")
+    state.mainResizeGrip = resizeGrip
+
     state.mainFrame = frame
-    layoutMainFrame(0)
+    layoutMainFrame()
     return frame
 end
 
