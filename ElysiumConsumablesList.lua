@@ -915,8 +915,7 @@ local function refreshMainFrame()
     local rows, stats = collectMainRows(storage)
     state.mainVisibleRowCount = #rows
 
-    local exportText = buildAuctionatorExportText(storage)
-    state.mainBody:SetText(buildSummaryText(stats) .. "\n\nExport:\n" .. exportText)
+    state.mainBody:SetText(buildSummaryText(stats))
 
     ensureMainRows(#rows)
     for index, rowData in ipairs(rows) do
