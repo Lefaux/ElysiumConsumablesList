@@ -1,0 +1,8 @@
+## Interface: 11507
+## Title: ElysiumConsumablesList
+## Notes: Shows a configurable shopping list of consumables.
+## Author: Lefaux
+## Version: 1.0.0
+## SavedVariables: ElysiumConsumablesListDB
+
+ElysiumConsumablesList.lua
