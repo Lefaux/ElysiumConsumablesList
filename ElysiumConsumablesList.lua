@@ -54,6 +54,8 @@ local state = {
     configCloseButton = nil,
 }
 
+local showConfigFrame
+
 local function makeStorageKey()
     local name = UnitName("player") or "unknown"
     local realm = GetRealmName() or "unknown"
@@ -979,8 +981,6 @@ local function ensureMainFrame()
     layoutMainFrame(0)
     return frame
 end
-
-local showConfigFrame
 
 local function ensureConfigRows(count)
     local child = state.configScrollChild
