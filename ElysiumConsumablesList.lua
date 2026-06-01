@@ -58,11 +58,15 @@ local state = {
     configAddButton = nil,
     configCloseButton = nil,
     minimapButton = nil,
+    exportFrame = nil,
+    exportScrollFrame = nil,
+    exportEditBox = nil,
 }
 
 local ensureMainFrame
 local showMainFrame
 local showConfigFrame
+local showExportFrame
 
 local function makeStorageKey()
     local name = UnitName("player") or "unknown"
@@ -679,6 +683,63 @@ local function setMainGroupRowValues(row, label)
     row:Show()
 end
 
+local function escapeAuctionatorText(text)
+    return tostring(text or ""):gsub('"', '\\"')
+end
+
+local function buildAuctionatorExportText(storage)
+    local items = storage.items or {}
+    local sortedItems = {}
+
+    for _, item in ipairs(items) do
+        if item.enabled ~= false then
+            table.insert(sortedItems, item)
+        end
+    end
+
+    table.sort(sortedItems, function(left, right)
+        local leftInfo = getItemSortInfo(left)
+        local rightInfo = getItemSortInfo(right)
+
+        if leftInfo.sortClass ~= rightInfo.sortClass then
+            return leftInfo.sortClass < rightInfo.sortClass
+        end
+
+        if leftInfo.sortSubclass ~= rightInfo.sortSubclass then
+            return leftInfo.sortSubclass < rightInfo.sortSubclass
+        end
+
+        if leftInfo.sortName ~= rightInfo.sortName then
+            return leftInfo.sortName < rightInfo.sortName
+        end
+
+        return (tonumber(left.itemId) or 0) < (tonumber(right.itemId) or 0)
+    end)
+
+    local missingItems = {}
+
+    for _, item in ipairs(sortedItems) do
+        local hasConfiguredItem = (type(item.itemIds) == "table" and #item.itemIds > 0) or (tonumber(item.itemId) and tonumber(item.itemId) > 0)
+        if hasConfiguredItem then
+            local data = getItemStateData(item, true)
+            if data.desired and data.totalCount and data.totalCount < data.desired then
+                table.insert(missingItems, getItemDisplayName(item))
+            end
+        end
+    end
+
+    if #missingItems == 0 then
+        return "No missing items."
+    end
+
+    local parts = {"Consumables to Buy"}
+    for _, name in ipairs(missingItems) do
+        table.insert(parts, '"' .. escapeAuctionatorText(name) .. '"')
+    end
+
+    return table.concat(parts, "^")
+end
+
 local function collectMainRows(storage)
     local rows = {}
     local items = storage.items or {}
@@ -854,7 +915,8 @@ local function refreshMainFrame()
     local rows, stats = collectMainRows(storage)
     state.mainVisibleRowCount = #rows
 
-    state.mainBody:SetText(buildSummaryText(stats))
+    local exportText = buildAuctionatorExportText(storage)
+    state.mainBody:SetText(buildSummaryText(stats) .. "\n\nExport:\n" .. exportText)
 
     ensureMainRows(#rows)
     for index, rowData in ipairs(rows) do
@@ -1179,6 +1241,15 @@ ensureMainFrame = function()
     end)
     state.mainConfigButton = configButton
 
+    local exportButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    exportButton:SetSize(108, 22)
+    exportButton:SetPoint("BOTTOMLEFT", 12, 10)
+    exportButton:SetText("Export to Auctionator")
+    exportButton:SetScript("OnClick", function()
+        showExportFrame()
+    end)
+    state.mainExportButton = exportButton
+
     local resizeGrip = CreateFrame("Button", nil, frame)
     resizeGrip:SetSize(RESIZE_GRIP_SIZE, RESIZE_GRIP_SIZE)
     resizeGrip:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -1199,6 +1270,95 @@ ensureMainFrame = function()
 
     state.mainFrame = frame
     layoutMainFrame()
+    return frame
+end
+
+local function ensureExportFrame()
+    if state.exportFrame then
+        return state.exportFrame
+    end
+
+    local frame = CreateFrame("Frame", addonName .. "ExportFrame", UIParent, "BackdropTemplate")
+    frame:SetSize(620, 360)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameLevel(100)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 16,
+    })
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.98)
+    frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+    end)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Copy Missing Items")
+
+    local help = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    help:SetJustifyH("LEFT")
+    help:SetText("Copy the text below into Auctionator. The text is selected automatically.")
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetSize(20, 20)
+    close:SetPoint("TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    local box = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 0, -12)
+    box:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 18)
+    box:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 12,
+    })
+    box:SetBackdropColor(0, 0, 0, 0.55)
+    box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+
+    local editBox = CreateFrame("EditBox", nil, box)
+    editBox:SetPoint("TOPLEFT", 8, -8)
+    editBox:SetPoint("BOTTOMRIGHT", -8, 8)
+    editBox:SetAutoFocus(false)
+    editBox:SetMaxLetters(0)
+    editBox:EnableMouse(true)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(GameFontNormalLarge)
+    editBox:SetTextColor(1, 1, 0, 1)
+    editBox:SetJustifyH("LEFT")
+    editBox:SetJustifyV("TOP")
+    editBox:SetTextInsets(4, 4, 4, 4)
+    editBox:SetText(buildAuctionatorExportText(ensureCharacterStorage()))
+    editBox:SetCursorPosition(0)
+    editBox:ClearFocus()
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    editBox:SetScript("OnEditFocusGained", function(self)
+        self:HighlightText()
+    end)
+
+    frame:SetScript("OnShow", function()
+        editBox:SetText(buildAuctionatorExportText(ensureCharacterStorage()))
+        editBox:SetCursorPosition(0)
+        editBox:SetFocus()
+    end)
+
+    state.exportFrame = frame
+    state.exportEditBox = editBox
+
     return frame
 end
 
@@ -1515,6 +1675,12 @@ showMainFrame = function()
     local frame = ensureMainFrame()
     refreshMainFrame()
     setMainFrameVisible(true)
+end
+
+showExportFrame = function()
+    local frame = ensureExportFrame()
+    frame:Show()
+    frame:Raise()
 end
 
 local function hideMainFrame()
