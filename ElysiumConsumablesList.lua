@@ -26,58 +26,15 @@ local ROW_HEIGHT = 20
 local ROW_PADDING = 6
 local MAIN_HEADER_HEIGHT = 16
 
-local TEMPLATES = {
-    fury_warrior = {
-        label = "Fury Warrior",
-        description = "Default raid consumables for a Fury Warrior.",
-        items = {
-            {itemId = 13510, desiredCount = 2, source = "craft", spellId = 17635},
-            {itemId = 20079, desiredCount = 1, source = "buy"},
-            {itemId = 9206, desiredCount = 10, source = "craft", spellId = 11472},
-            {itemId = 13452, desiredCount = 10, source = "craft", spellId = 17571},
-            {itemId = 20452, desiredCount = 20, source = "craft", spellId = 24801},
-            {itemId = 18262, desiredCount = 20, source = "craft", spellId = 22757},
-            {itemId = 12820, desiredCount = 10, source = "buy"},
-            {itemId = 13442, desiredCount = 10, source = "craft", spellId = 17552},
-            {itemId = 13457, desiredCount = 5, source = "craft", spellId = 17574},
-            {itemId = 13458, desiredCount = 10, source = "craft", spellId = 17576},
-            {itemId = 13456, desiredCount = 10, source = "craft", spellId = 17575},
-            {itemId = 13459, desiredCount = 10, source = "craft", spellId = 17578},
-            {itemId = 10646, desiredCount = 10, source = "craft", spellId = 12760},
-            {itemId = 5634, desiredCount = 10, source = "craft", spellId = 6624},
-            {itemId = 3387, desiredCount = 10, source = "craft", spellId = 3175},
-            {itemId = 13446, desiredCount = 10, source = "craft", spellId = 17556},
-            {itemId = 3386, desiredCount = 10, source = "craft", spellId = 3174},
-            {itemId = 13455, desiredCount = 10, source = "craft", spellId = 17570},
-            {itemId = 3829, desiredCount = 2, source = "craft", spellId = 3454},
-            {itemId = 10761, desiredCount = 2, source = "buy"},
-            {itemId = 12451, desiredCount = 20, source = "buy"},
-        },
-    },
-    holy_paladin = {
-        label = "Holy Paladin",
-        description = "Default raid consumables for a Holy Paladin.",
-        items = {
-            {itemId = 13511, desiredCount = 2, source = "craft", spellId = 17636},
-            {itemId = 13444, desiredCount = 15, source = "craft", spellId = 17572},
-            {itemId = 13458, desiredCount = 10, source = "craft", spellId = 17576},
-            {itemId = 13459, desiredCount = 5, source = "craft", spellId = 17578},
-            {itemId = 20007, desiredCount = 5, source = "craft", spellId = 24368},
-            {itemId = 13724, desiredCount = 40, source = "buy"},
-            {itemId = 13931, desiredCount = 20, source = "buy"},
-            {itemId = 20079, desiredCount = 1, source = "buy"},
-            {itemId = 20749, desiredCount = 10, source = "buy", chargesPerItem = 5},
-            {itemId = 13456, desiredCount = 10, source = "craft", spellId = 17575},
-        },
-    },
+ElysiumConsumablesListTemplates = ElysiumConsumablesListTemplates or {
+    templates = {},
+    sharedItems = {},
+    order = {},
 }
 
-local UNIVERSAL_TEMPLATE_ITEMS = {
-    {itemId = 15138, desiredCount = 1, source = "buy"},
-    {itemId = 22754, desiredCount = 1, source = "buy"},
-    {itemIds = {21176, 21321, 21218, 21324, 21323}, desiredCount = 1, source = "buy", label = "AQ mount"},
-    {itemIds = {12662, 20520}, desiredCount = 10, source = "buy", label = "Dark Runes / Demonic Runes"},
-}
+local TEMPLATE_REGISTRY = ElysiumConsumablesListTemplates
+local TEMPLATES = TEMPLATE_REGISTRY.templates
+local UNIVERSAL_TEMPLATE_ITEMS = TEMPLATE_REGISTRY.sharedItems
 
 local TEMPLATE_ORDER = {"fury_warrior", "holy_paladin"}
 
@@ -511,10 +468,39 @@ local function isItemCraftable(item)
         return false
     end
 
-    if IsSpellKnown then
-        local ok, known = pcall(IsSpellKnown, item.spellId)
+    local spellId = item.spellId
+    local targetName = GetSpellInfo and GetSpellInfo(spellId) or nil
+
+    if type(IsSpellKnown) == "function" then
+        local ok, known = pcall(IsSpellKnown, spellId)
         if ok and known then
             return true
+        end
+    end
+
+    if type(IsPlayerSpell) == "function" then
+        local ok, known = pcall(IsPlayerSpell, spellId)
+        if ok and known then
+            return true
+        end
+    end
+
+    if targetName and type(GetNumSpellTabs) == "function" and type(GetSpellTabInfo) == "function" and type(GetSpellBookItemName) == "function" then
+        local numTabs = GetNumSpellTabs() or 0
+        for tab = 1, numTabs do
+            local _, _, offset, numSpells = GetSpellTabInfo(tab)
+            if offset and numSpells then
+                for slot = offset + 1, offset + numSpells do
+                    local bookName = GetSpellBookItemName(slot, BOOKTYPE_SPELL)
+                    if bookName == targetName then
+                        return true
+                    end
+                    local professionName = GetSpellBookItemName(slot, BOOKTYPE_PROFESSION)
+                    if professionName == targetName then
+                        return true
+                    end
+                end
+            end
         end
     end
 

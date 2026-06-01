@@ -2,7 +2,10 @@
 ## Title: ElysiumConsumablesList
 ## Notes: Shows a configurable shopping list of consumables.
 ## Author: Lefaux
-## Version: 1.0.1
+## Version: 1.0.2
 ## SavedVariables: ElysiumConsumablesListDB
 
+templates/shared_items.lua
+templates/warrior_fury.lua
+templates/paladin_holy.lua
 ElysiumConsumablesList.lua
