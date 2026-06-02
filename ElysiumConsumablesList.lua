@@ -61,6 +61,7 @@ local state = {
     exportFrame = nil,
     exportScrollFrame = nil,
     exportEditBox = nil,
+    mainRefreshQueued = false,
 }
 
 local ensureMainFrame
@@ -911,7 +912,9 @@ local function refreshMainFrame()
     end
 
     local storage = ensureCharacterStorage()
-    refreshBankCache(storage)
+    if isBankAccessible() then
+        refreshBankCache(storage)
+    end
     local rows, stats = collectMainRows(storage)
     state.mainVisibleRowCount = #rows
 
@@ -938,6 +941,26 @@ local function refreshMainFrame()
     end
 
     layoutMainFrame()
+end
+
+local function shouldQueueMainRefresh()
+    return (state.mainFrame and state.mainFrame:IsShown())
+        or (state.exportFrame and state.exportFrame:IsShown())
+        or (state.configFrame and state.configFrame:IsShown())
+end
+
+local function queueMainRefresh()
+    if not shouldQueueMainRefresh() or state.mainRefreshQueued then
+        return
+    end
+
+    state.mainRefreshQueued = true
+    C_Timer.After(0.05, function()
+        state.mainRefreshQueued = false
+        if shouldQueueMainRefresh() then
+            refreshMainFrame()
+        end
+    end)
 end
 
 local function getSavedMainPoint(storage)
@@ -1771,8 +1794,17 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         return
     end
 
-    if event == "PLAYER_ENTERING_WORLD" or event == "BAG_UPDATE_DELAYED" or event == "BANKFRAME_OPENED" or event == "BANKFRAME_CLOSED" or event == "PLAYERBANKSLOTS_CHANGED" then
+    if event == "PLAYER_ENTERING_WORLD" then
         refreshMainFrame()
+        return
+    end
+
+    if event == "BAG_UPDATE_DELAYED" or event == "BANKFRAME_OPENED" or event == "BANKFRAME_CLOSED" or event == "PLAYERBANKSLOTS_CHANGED" then
+        if event == "BANKFRAME_OPENED" or event == "PLAYERBANKSLOTS_CHANGED" then
+            local storage = ensureCharacterStorage()
+            refreshBankCache(storage)
+        end
+        queueMainRefresh()
         return
     end
 
