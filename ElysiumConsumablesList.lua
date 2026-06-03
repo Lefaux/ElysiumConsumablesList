@@ -1082,7 +1082,7 @@ local function ensureMinimapButton()
         return state.minimapButton
     end
 
-    local button = CreateFrame("Button", addonName .. "MinimapButton", Minimap)
+    local button = CreateFrame("Button", "Elysium Consumables List", Minimap)
     button:SetSize(31, 31)
     button:SetFrameStrata("MEDIUM")
     button:SetFrameLevel(8)
