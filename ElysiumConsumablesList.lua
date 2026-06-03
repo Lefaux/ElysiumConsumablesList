@@ -1,6 +1,7 @@
 local addonName = ...
 
 ElysiumConsumablesListDB = ElysiumConsumablesListDB or {}
+ElysiumConsumablesListTemplatesDB = ElysiumConsumablesListTemplatesDB or {}
 
 local DEFAULT_POINT = {
     point = "CENTER",
@@ -39,7 +40,7 @@ local TEMPLATE_REGISTRY = ElysiumConsumablesListTemplates
 local TEMPLATES = TEMPLATE_REGISTRY.templates
 local UNIVERSAL_TEMPLATE_ITEMS = TEMPLATE_REGISTRY.sharedItems
 
-local TEMPLATE_ORDER = {"fury_warrior", "holy_paladin"}
+local BUILTIN_TEMPLATE_ORDER = {"fury_warrior", "holy_paladin"}
 
 local state = {
     mainFrame = nil,
@@ -57,10 +58,15 @@ local state = {
     configRows = {},
     configAddButton = nil,
     configCloseButton = nil,
+    configSaveTemplateButton = nil,
+    configShareTemplateButton = nil,
     minimapButton = nil,
     exportFrame = nil,
     exportScrollFrame = nil,
     exportEditBox = nil,
+    shareTemplateFrame = nil,
+    shareTemplateScrollFrame = nil,
+    shareTemplateEditBox = nil,
     mainRefreshQueued = false,
 }
 
@@ -68,6 +74,7 @@ local ensureMainFrame
 local showMainFrame
 local showConfigFrame
 local showExportFrame
+local getTemplateLabel
 
 local function makeStorageKey()
     local name = UnitName("player") or "unknown"
@@ -92,8 +99,216 @@ local function ensureRootDB()
     end
 end
 
+local function ensureTemplateDB()
+    if type(ElysiumConsumablesListTemplatesDB) ~= "table" then
+        ElysiumConsumablesListTemplatesDB = {}
+    end
+
+    ElysiumConsumablesListTemplatesDB.templates = type(ElysiumConsumablesListTemplatesDB.templates) == "table" and ElysiumConsumablesListTemplatesDB.templates or {}
+    ElysiumConsumablesListTemplatesDB.order = type(ElysiumConsumablesListTemplatesDB.order) == "table" and ElysiumConsumablesListTemplatesDB.order or {}
+
+    return ElysiumConsumablesListTemplatesDB
+end
+
+local function ensurePersonalTemplatesLoaded()
+    local db = ensureTemplateDB()
+
+    for key, template in pairs(db.templates) do
+        if type(template) == "table" and TEMPLATES[key] == nil then
+            TEMPLATES[key] = {
+                label = template.label,
+                description = template.description,
+                items = {},
+            }
+
+            for _, item in ipairs(template.items or {}) do
+                table.insert(TEMPLATES[key].items, {
+                    itemId = item.itemId,
+                    itemIds = item.itemIds and {unpack(item.itemIds)} or nil,
+                    label = item.label,
+                    desiredCount = item.desiredCount or DEFAULT_ROWS,
+                    source = item.source,
+                    spellId = item.spellId,
+                    chargesPerItem = item.chargesPerItem,
+                })
+            end
+        end
+    end
+end
+
+local function getOrderedTemplateKeys()
+    ensurePersonalTemplatesLoaded()
+
+    local keys = {}
+    local seen = {}
+
+    local function addKey(key)
+        if key and not seen[key] and TEMPLATES[key] then
+            seen[key] = true
+            table.insert(keys, key)
+        end
+    end
+
+    for _, key in ipairs(BUILTIN_TEMPLATE_ORDER) do
+        addKey(key)
+    end
+
+    for _, key in ipairs(ensureTemplateDB().order) do
+        addKey(key)
+    end
+
+    for key in pairs(TEMPLATES) do
+        addKey(key)
+    end
+
+    return keys
+end
+
+local function sanitizeTemplateKey(text)
+    local key = string.lower(tostring(text or ""))
+    key = key:gsub("[^%w]+", "_")
+    key = key:gsub("^_+", "")
+    key = key:gsub("_+$", "")
+
+    if key == "" then
+        key = "personal_template"
+    end
+
+    if key:match("^%d") then
+        key = "template_" .. key
+    end
+
+    return "personal_" .. key
+end
+
+local function quoteLuaString(text)
+    return string.format("%q", tostring(text or ""))
+end
+
+local function getPersonalTemplateDisplayName(storage)
+    local templateKey = storage and storage.templateKey or nil
+    local label = getTemplateLabel(templateKey or "")
+
+    if label == "Custom" then
+        return "Personal Template"
+    end
+
+    if templateKey and string.sub(templateKey, 1, 9) == "personal_" then
+        return label
+    end
+
+    return "Personal " .. label
+end
+
+local function cloneTemplateItem(item)
+    if not item then
+        return nil
+    end
+
+    return {
+        itemId = item.itemId,
+        itemIds = item.itemIds and {unpack(item.itemIds)} or nil,
+        label = item.label,
+        desiredCount = item.desiredCount or DEFAULT_ROWS,
+        source = item.source,
+        spellId = item.spellId,
+        chargesPerItem = item.chargesPerItem,
+    }
+end
+
+local function cloneTemplateDefinition(definition)
+    if type(definition) ~= "table" then
+        return nil
+    end
+
+    local clone = {
+        label = definition.label,
+        description = definition.description,
+        items = {},
+    }
+
+    for _, item in ipairs(definition.items or {}) do
+        local clonedItem = cloneTemplateItem(item)
+        if clonedItem then
+            table.insert(clone.items, clonedItem)
+        end
+    end
+
+    return clone
+end
+
+local function buildTemplateItemsFromStorage(storage)
+    local items = {}
+
+    for _, item in ipairs(storage.items or {}) do
+        if item.enabled ~= false then
+            local cloned = cloneTemplateItem(item)
+            if cloned and (cloned.itemId or (type(cloned.itemIds) == "table" and #cloned.itemIds > 0)) then
+                table.insert(items, cloned)
+            end
+        end
+    end
+
+    return items
+end
+
+local function savePersonalTemplate(templateLabel, items)
+    local db = ensureTemplateDB()
+    local key = sanitizeTemplateKey(templateLabel)
+    local definition = {
+        label = templateLabel,
+        description = "Personal consumables template saved from ElysiumConsumablesList.",
+        items = {},
+    }
+
+    for _, item in ipairs(items or {}) do
+        local cloned = cloneTemplateItem(item)
+        if cloned then
+            table.insert(definition.items, cloned)
+        end
+    end
+
+    db.templates[key] = cloneTemplateDefinition(definition)
+
+    local found = false
+    for _, existingKey in ipairs(db.order) do
+        if existingKey == key then
+            found = true
+            break
+        end
+    end
+    if not found then
+        table.insert(db.order, key)
+    end
+
+    TEMPLATES[key] = cloneTemplateDefinition(definition)
+
+    return key
+end
+
+local function deletePersonalTemplate(templateKey)
+    if not templateKey or string.sub(templateKey, 1, 9) ~= "personal_" then
+        return false
+    end
+
+    local db = ensureTemplateDB()
+    db.templates[templateKey] = nil
+
+    if type(db.order) == "table" then
+        for index = #db.order, 1, -1 do
+            if db.order[index] == templateKey then
+                table.remove(db.order, index)
+            end
+        end
+    end
+
+    TEMPLATES[templateKey] = nil
+    return true
+end
+
 local function ensureCharacterStorage()
     ensureRootDB()
+    ensurePersonalTemplatesLoaded()
 
     local key = makeStorageKey()
     local storage = ElysiumConsumablesListDB[key]
@@ -156,6 +371,8 @@ local function ensureCharacterStorage()
 end
 
 local function cloneTemplateItems(templateKey)
+    ensurePersonalTemplatesLoaded()
+
     local template = TEMPLATES[templateKey]
     if not template then
         return {}
@@ -163,29 +380,19 @@ local function cloneTemplateItems(templateKey)
 
     local items = {}
     for _, item in ipairs(template.items or {}) do
-        table.insert(items, {
-            enabled = true,
-            itemId = item.itemId,
-            itemIds = item.itemIds and {unpack(item.itemIds)} or nil,
-            label = item.label,
-            desiredCount = item.desiredCount or DEFAULT_ROWS,
-            source = item.source,
-            spellId = item.spellId,
-            chargesPerItem = item.chargesPerItem,
-        })
+        local cloned = cloneTemplateItem(item)
+        if cloned then
+            cloned.enabled = true
+            table.insert(items, cloned)
+        end
     end
 
     for _, item in ipairs(UNIVERSAL_TEMPLATE_ITEMS) do
-        table.insert(items, {
-            enabled = true,
-            itemId = item.itemId,
-            itemIds = item.itemIds and {unpack(item.itemIds)} or nil,
-            label = item.label,
-            desiredCount = item.desiredCount or DEFAULT_ROWS,
-            source = item.source,
-            spellId = item.spellId,
-            chargesPerItem = item.chargesPerItem,
-        })
+        local cloned = cloneTemplateItem(item)
+        if cloned then
+            cloned.enabled = true
+            table.insert(items, cloned)
+        end
     end
 
     return items
@@ -200,7 +407,9 @@ local function applyTemplate(templateKey, replaceItems)
     end
 end
 
-local function getTemplateLabel(templateKey)
+getTemplateLabel = function(templateKey)
+    ensurePersonalTemplatesLoaded()
+
     local template = TEMPLATES[templateKey]
     if template then
         return template.label
@@ -219,12 +428,30 @@ local function refreshTemplateDropdownText(dropdown)
     UIDropDownMenu_SetText(dropdown, getTemplateLabel(templateKey))
 end
 
+local function refreshTemplateManagementButtons(frame)
+    if not frame then
+        return
+    end
+
+    local storage = ensureCharacterStorage()
+    local templateKey = storage.templateKey or ""
+    local isPersonal = string.sub(templateKey, 1, 9) == "personal_"
+
+    if frame.deleteTemplateButton then
+        frame.deleteTemplateButton:SetShown(isPersonal)
+    end
+
+    if frame.saveTemplateButton then
+        frame.saveTemplateButton:SetText(isPersonal and "Update personal template" or "Save as personal template")
+    end
+end
+
 local function initializeTemplateDropdown(dropdown)
     UIDropDownMenu_Initialize(dropdown, function(self, level)
         local storage = ensureCharacterStorage()
         local templateKey = storage.templateKey or "fury_warrior"
 
-        for _, key in ipairs(TEMPLATE_ORDER) do
+        for _, key in ipairs(getOrderedTemplateKeys()) do
             local template = TEMPLATES[key]
             local info = UIDropDownMenu_CreateInfo()
             info.text = template.label
@@ -233,6 +460,7 @@ local function initializeTemplateDropdown(dropdown)
             info.func = function(button)
                 storage.templateKey = button.value
                 refreshTemplateDropdownText(dropdown)
+                refreshTemplateManagementButtons(state.configFrame)
             end
             UIDropDownMenu_AddButton(info, level)
         end
@@ -686,6 +914,69 @@ end
 
 local function escapeAuctionatorText(text)
     return tostring(text or ""):gsub('"', '\\"')
+end
+
+local function formatTemplateItemForLua(item)
+    local parts = {}
+
+    if type(item.itemIds) == "table" and #item.itemIds > 0 then
+        table.insert(parts, "itemIds = {" .. table.concat(item.itemIds, ", ") .. "}")
+    elseif item.itemId then
+        table.insert(parts, "itemId = " .. tostring(item.itemId))
+    end
+
+    if item.desiredCount and item.desiredCount ~= DEFAULT_ROWS then
+        table.insert(parts, "desiredCount = " .. tostring(item.desiredCount))
+    elseif item.desiredCount then
+        table.insert(parts, "desiredCount = " .. tostring(item.desiredCount))
+    end
+
+    if item.source then
+        table.insert(parts, "source = " .. quoteLuaString(item.source))
+    end
+
+    if item.spellId then
+        table.insert(parts, "spellId = " .. tostring(item.spellId))
+    end
+
+    if item.chargesPerItem then
+        table.insert(parts, "chargesPerItem = " .. tostring(item.chargesPerItem))
+    end
+
+    if item.label and item.label ~= "" then
+        table.insert(parts, "label = " .. quoteLuaString(item.label))
+    end
+
+    return "        {" .. table.concat(parts, ", ") .. "},"
+end
+
+local function buildTemplateLuaExportText(storage, templateLabel)
+    local label = tostring(templateLabel or "Personal Template")
+    local key = sanitizeTemplateKey(label)
+    local items = buildTemplateItemsFromStorage(storage)
+    local lines = {
+        "ElysiumConsumablesListTemplates = ElysiumConsumablesListTemplates or {",
+        "    templates = {},",
+        "    sharedItems = {},",
+        "    order = {},",
+        "}",
+        "",
+        "local registry = ElysiumConsumablesListTemplates",
+        "",
+        "registry.templates." .. key .. " = {",
+        "    label = " .. quoteLuaString(label) .. ",",
+        "    description = " .. quoteLuaString("Personal consumables template saved from ElysiumConsumablesList.") .. ",",
+        "    items = {",
+    }
+
+    for _, item in ipairs(items) do
+        table.insert(lines, formatTemplateItemForLua(item))
+    end
+
+    table.insert(lines, "    },")
+    table.insert(lines, "}")
+
+    return table.concat(lines, "\n")
 end
 
 local function buildAuctionatorExportText(storage)
@@ -1384,6 +1675,189 @@ local function ensureExportFrame()
     return frame
 end
 
+local function refreshTemplateShareFrame()
+    local frame = state.shareTemplateFrame
+    local editBox = state.shareTemplateEditBox
+    if not frame or not editBox then
+        return
+    end
+
+    local storage = ensureCharacterStorage()
+    local templateLabel = getPersonalTemplateDisplayName(storage)
+    local exportText = buildTemplateLuaExportText(storage, templateLabel)
+    editBox:SetText(exportText)
+    editBox:SetCursorPosition(0)
+    editBox:HighlightText()
+    if state.shareTemplateScrollFrame and state.shareTemplateScrollFrame.SetVerticalScroll then
+        state.shareTemplateScrollFrame:SetVerticalScroll(0)
+    end
+end
+
+local function ensureTemplateShareFrame()
+    if state.shareTemplateFrame then
+        return state.shareTemplateFrame
+    end
+
+    local frame = CreateFrame("Frame", addonName .. "TemplateShareFrame", UIParent, "BackdropTemplate")
+    frame:SetSize(760, 460)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameLevel(110)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 16,
+    })
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.98)
+    frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+    end)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Share Template with the World")
+
+    local help = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    help:SetJustifyH("LEFT")
+    help:SetText("Copy this into an comment on curseforge or a new issue ticket on github")
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetSize(20, 20)
+    close:SetPoint("TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    local box = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 0, -12)
+    box:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 18)
+    box:SetBackdrop({
+        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 12,
+    })
+    box:SetBackdropColor(0, 0, 0, 0.55)
+    box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+
+    local scrollFrame = CreateFrame("ScrollFrame", nil, box, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 4, -4)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -28, 4)
+    state.shareTemplateScrollFrame = scrollFrame
+
+    local editBox = CreateFrame("EditBox", nil, scrollFrame)
+    editBox:SetSize(640, 1)
+    editBox:SetAutoFocus(false)
+    editBox:SetMaxLetters(0)
+    editBox:EnableMouse(true)
+    editBox:SetMultiLine(true)
+    editBox:SetFontObject(GameFontNormalLarge)
+    editBox:SetTextColor(1, 1, 0, 1)
+    editBox:SetJustifyH("LEFT")
+    editBox:SetJustifyV("TOP")
+    editBox:SetTextInsets(4, 4, 4, 4)
+    editBox:SetWidth(640)
+    editBox:ClearFocus()
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    editBox:SetScript("OnEditFocusGained", function(self)
+        self:HighlightText()
+    end)
+    scrollFrame:SetScrollChild(editBox)
+
+    frame:SetScript("OnShow", function()
+        refreshTemplateShareFrame()
+        editBox:SetFocus()
+        editBox:SetCursorPosition(0)
+        C_Timer.After(0, function()
+            if state.shareTemplateFrame and state.shareTemplateFrame:IsShown() then
+                refreshTemplateShareFrame()
+                if state.shareTemplateEditBox then
+                    state.shareTemplateEditBox:SetFocus()
+                    state.shareTemplateEditBox:SetCursorPosition(0)
+                end
+            end
+        end)
+    end)
+
+    state.shareTemplateFrame = frame
+    state.shareTemplateEditBox = editBox
+
+    return frame
+end
+
+local function registerSaveTemplatePopup()
+    if StaticPopupDialogs["ELYSIUMCONSUMABLESLIST_SAVE_TEMPLATE"] then
+        return
+    end
+
+    local enteredTemplateName = nil
+
+    StaticPopupDialogs["ELYSIUMCONSUMABLESLIST_SAVE_TEMPLATE"] = {
+        text = "Save the current list as a personal template.",
+        button1 = ACCEPT,
+        button2 = CANCEL,
+        hasEditBox = true,
+        maxLetters = 64,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+        OnShow = function(self, data)
+            local defaultName = "Personal Template"
+            if type(data) == "table" and data.defaultName and data.defaultName ~= "" then
+                defaultName = data.defaultName
+            end
+
+            enteredTemplateName = defaultName
+            local editBox = _G[self:GetName() .. "EditBox"] or self.editBox
+            if editBox then
+                editBox:SetText(defaultName)
+                editBox:HighlightText()
+                editBox:SetFocus()
+                editBox:SetScript("OnTextChanged", function(box)
+                    enteredTemplateName = strtrim(box:GetText() or "")
+                end)
+            end
+        end,
+        OnAccept = function(self, data)
+            local name = strtrim(enteredTemplateName or "")
+            if name == "" then
+                if type(data) == "table" and data.defaultName and data.defaultName ~= "" then
+                    name = data.defaultName
+                else
+                    name = "Personal Template"
+                end
+            end
+
+            local storage = ensureCharacterStorage()
+            local key = savePersonalTemplate(name, buildTemplateItemsFromStorage(storage))
+            storage.templateKey = key
+            refreshTemplateDropdownText(state.configFrame and state.configFrame.templateDropdown)
+            refreshTemplateManagementButtons(state.configFrame)
+            refreshConfigFrame()
+            refreshMainFrame()
+        end,
+        OnHide = function(self)
+            enteredTemplateName = nil
+            local editBox = _G[self:GetName() .. "EditBox"] or self.editBox
+            if editBox then
+                editBox:SetScript("OnTextChanged", nil)
+                editBox:SetText("")
+            end
+        end,
+    }
+end
+
 local function ensureConfigRows(count)
     local child = state.configScrollChild
     if not child then
@@ -1598,6 +2072,57 @@ function ensureConfigFrame()
     end)
     frame.addButton = addButton
 
+    local saveTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    saveTemplateButton:SetSize(184, 22)
+    saveTemplateButton:SetPoint("BOTTOMLEFT", 14, 40)
+    saveTemplateButton:SetText("Save as personal template")
+    saveTemplateButton:SetScript("OnClick", function()
+        registerSaveTemplatePopup()
+        local storage = ensureCharacterStorage()
+        local defaultName = getPersonalTemplateDisplayName(storage)
+        StaticPopup_Show("ELYSIUMCONSUMABLESLIST_SAVE_TEMPLATE", nil, nil, {
+            defaultName = defaultName,
+        })
+    end)
+    frame.saveTemplateButton = saveTemplateButton
+    state.configSaveTemplateButton = saveTemplateButton
+
+    local deleteTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    deleteTemplateButton:SetSize(164, 22)
+    deleteTemplateButton:SetPoint("LEFT", saveTemplateButton, "RIGHT", 8, 0)
+    deleteTemplateButton:SetText("Delete personal template")
+    deleteTemplateButton:SetScript("OnClick", function()
+        local storage = ensureCharacterStorage()
+        local templateKey = storage.templateKey or ""
+        if string.sub(templateKey, 1, 9) ~= "personal_" then
+            return
+        end
+
+        if deletePersonalTemplate(templateKey) then
+            local fallbackKey = getDefaultTemplateKey() or "fury_warrior"
+            storage.templateKey = fallbackKey
+            applyTemplate(fallbackKey, true)
+            refreshTemplateDropdownText(frame.templateDropdown)
+            refreshTemplateManagementButtons(frame)
+            refreshConfigFrame()
+            refreshMainFrame()
+        end
+    end)
+    frame.deleteTemplateButton = deleteTemplateButton
+
+    local shareTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    shareTemplateButton:SetSize(218, 22)
+    shareTemplateButton:SetPoint("LEFT", deleteTemplateButton, "RIGHT", 8, 0)
+    shareTemplateButton:SetText("Share template with the world")
+    shareTemplateButton:SetScript("OnClick", function()
+        local popup = ensureTemplateShareFrame()
+        refreshTemplateShareFrame()
+        popup:Show()
+        popup:Raise()
+    end)
+    frame.shareTemplateButton = shareTemplateButton
+    state.configShareTemplateButton = shareTemplateButton
+
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     closeButton:SetSize(20, 20)
     closeButton:SetPoint("TOPRIGHT", -2, -2)
@@ -1679,6 +2204,7 @@ function refreshConfigFrame()
 
     local storage = ensureCharacterStorage()
     refreshTemplateDropdownText(frame.templateDropdown)
+    refreshTemplateManagementButtons(frame)
     frame.hideOnCharacter:SetChecked(storage.hideOnCharacter == true)
     local items = storage.items or {}
     ensureConfigRows(math.max(#items, 1))
