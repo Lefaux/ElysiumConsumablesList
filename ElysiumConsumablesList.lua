@@ -29,6 +29,7 @@ local CONFIG_FRAME_HEIGHT = 520
 local ROW_HEIGHT = 20
 local ROW_PADDING = 6
 local MAIN_HEADER_HEIGHT = 16
+local OPAQUE_BG_TEXTURE = "Interface/Buttons/WHITE8x8"
 
 ElysiumConsumablesListTemplates = ElysiumConsumablesListTemplates or {
     templates = {},
@@ -60,6 +61,9 @@ local state = {
     configCloseButton = nil,
     configSaveTemplateButton = nil,
     configShareTemplateButton = nil,
+    settingsFrame = nil,
+    settingsSlider = nil,
+    settingsValue = nil,
     minimapButton = nil,
     exportFrame = nil,
     exportScrollFrame = nil,
@@ -73,6 +77,7 @@ local state = {
 local ensureMainFrame
 local showMainFrame
 local showConfigFrame
+local showSettingsFrame
 local showExportFrame
 local getTemplateLabel
 
@@ -360,6 +365,9 @@ local function ensureCharacterStorage()
     if storage.mainVisible == nil then
         storage.mainVisible = true
     end
+    if storage.opacity == nil then
+        storage.opacity = 1
+    end
     storage.minimap = storage.minimap or {
         visible = true,
         position = 225,
@@ -368,6 +376,26 @@ local function ensureCharacterStorage()
     storage.bankCounts = type(storage.bankCounts) == "table" and storage.bankCounts or {}
 
     return storage
+end
+
+local function applyAddonOpacity(opacity)
+    local value = tonumber(opacity) or 1
+    value = math.max(0.2, math.min(1, value))
+
+    if state.mainFrame then
+        state.mainFrame:SetAlpha(value)
+    end
+    if state.configFrame then
+        state.configFrame:SetAlpha(value)
+    end
+    if state.exportFrame then
+        state.exportFrame:SetAlpha(value)
+    end
+    if state.shareTemplateFrame then
+        state.shareTemplateFrame:SetAlpha(value)
+    end
+
+    return value
 end
 
 local function cloneTemplateItems(templateKey)
@@ -1460,12 +1488,12 @@ ensureMainFrame = function()
     local savedSize = storage.mainSize or {}
     frame:SetSize(savedSize.width or MAIN_FRAME_WIDTH, savedSize.height or 340)
     frame:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 16,
     })
-    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.95)
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 1)
     frame:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -1582,6 +1610,7 @@ ensureMainFrame = function()
     state.mainResizeGrip = resizeGrip
 
     state.mainFrame = frame
+    applyAddonOpacity(storage.opacity)
     layoutMainFrame()
     return frame
 end
@@ -1597,12 +1626,12 @@ local function ensureExportFrame()
     frame:SetFrameLevel(100)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 16,
     })
-    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.98)
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 1)
     frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -1633,12 +1662,12 @@ local function ensureExportFrame()
     box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 0, -12)
     box:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 18)
     box:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 12,
     })
-    box:SetBackdropColor(0, 0, 0, 0.55)
+    box:SetBackdropColor(0, 0, 0, 1)
     box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
 
     local editBox = CreateFrame("EditBox", nil, box)
@@ -1671,6 +1700,7 @@ local function ensureExportFrame()
 
     state.exportFrame = frame
     state.exportEditBox = editBox
+    applyAddonOpacity(ensureCharacterStorage().opacity)
 
     return frame
 end
@@ -1693,6 +1723,114 @@ local function refreshTemplateShareFrame()
     end
 end
 
+local function refreshSettingsFrame()
+    local frame = state.settingsFrame
+    local slider = state.settingsSlider
+    local valueText = state.settingsValue
+    if not frame or not slider or not valueText then
+        return
+    end
+
+    local storage = ensureCharacterStorage()
+    local opacity = applyAddonOpacity(storage.opacity)
+    slider:SetValue(opacity)
+    valueText:SetText(string.format("%d%%", math.floor(opacity * 100 + 0.5)))
+end
+
+local function ensureSettingsFrame()
+    if state.settingsFrame then
+        return state.settingsFrame
+    end
+
+    local frame = CreateFrame("Frame", addonName .. "SettingsFrame", UIParent, "BackdropTemplate")
+    frame:SetSize(360, 160)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameLevel(120)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetBackdrop({
+        bgFile = OPAQUE_BG_TEXTURE,
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 16,
+    })
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 1)
+    frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+    end)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Settings")
+
+    local help = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    help:SetJustifyH("LEFT")
+    help:SetText("Adjust the opacity of the addon windows.")
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetSize(20, 20)
+    close:SetPoint("TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+
+    local slider = CreateFrame("Slider", addonName .. "OpacitySlider", frame, "OptionsSliderTemplate")
+    slider:SetPoint("TOPLEFT", 24, -72)
+    slider:SetWidth(300)
+    slider:SetMinMaxValues(0.2, 1.0)
+    slider:SetValueStep(0.01)
+    slider:SetObeyStepOnDrag(true)
+    slider:SetValue(1)
+
+    local low = _G[slider:GetName() .. "Low"]
+    local high = _G[slider:GetName() .. "High"]
+    local text = _G[slider:GetName() .. "Text"]
+    if low then
+        low:SetText("20%")
+    end
+    if high then
+        high:SetText("100%")
+    end
+    if text then
+        text:SetText("Window Opacity")
+    end
+
+    local valueText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    valueText:SetPoint("TOP", slider, "BOTTOM", 0, -10)
+    valueText:SetText("100%")
+
+    slider:SetScript("OnValueChanged", function(self, value)
+        local storage = ensureCharacterStorage()
+        local clamped = math.max(0.2, math.min(1, value))
+        storage.opacity = clamped
+        valueText:SetText(string.format("%d%%", math.floor(clamped * 100 + 0.5)))
+        applyAddonOpacity(clamped)
+    end)
+
+    frame:SetScript("OnShow", function()
+        refreshSettingsFrame()
+    end)
+
+    state.settingsFrame = frame
+    state.settingsSlider = slider
+    state.settingsValue = valueText
+
+    return frame
+end
+
+showSettingsFrame = function()
+    local frame = ensureSettingsFrame()
+    refreshSettingsFrame()
+    frame:Show()
+    frame:Raise()
+end
+
 local function ensureTemplateShareFrame()
     if state.shareTemplateFrame then
         return state.shareTemplateFrame
@@ -1704,12 +1842,12 @@ local function ensureTemplateShareFrame()
     frame:SetFrameLevel(110)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 16,
     })
-    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.98)
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 1)
     frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -1740,12 +1878,12 @@ local function ensureTemplateShareFrame()
     box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 0, -12)
     box:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 18)
     box:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 12,
     })
-    box:SetBackdropColor(0, 0, 0, 0.55)
+    box:SetBackdropColor(0, 0, 0, 1)
     box:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
 
     local scrollFrame = CreateFrame("ScrollFrame", nil, box, "UIPanelScrollFrameTemplate")
@@ -1791,6 +1929,7 @@ local function ensureTemplateShareFrame()
 
     state.shareTemplateFrame = frame
     state.shareTemplateEditBox = editBox
+    applyAddonOpacity(ensureCharacterStorage().opacity)
 
     return frame
 end
@@ -2003,12 +2142,12 @@ function ensureConfigFrame()
     local frame = CreateFrame("Frame", addonName .. "ConfigFrame", UIParent, "BackdropTemplate")
     frame:SetSize(CONFIG_FRAME_WIDTH, CONFIG_FRAME_HEIGHT)
     frame:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+        bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
         tile = true,
         edgeSize = 16,
     })
-    frame:SetBackdropColor(0.07, 0.07, 0.07, 0.98)
+    frame:SetBackdropColor(0.07, 0.07, 0.07, 1)
     frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -2123,6 +2262,15 @@ function ensureConfigFrame()
     frame.shareTemplateButton = shareTemplateButton
     state.configShareTemplateButton = shareTemplateButton
 
+    local settingsButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    settingsButton:SetSize(92, 22)
+    settingsButton:SetPoint("BOTTOMRIGHT", -14, 40)
+    settingsButton:SetText("Settings")
+    settingsButton:SetScript("OnClick", function()
+        showSettingsFrame()
+    end)
+    frame.settingsButton = settingsButton
+
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     closeButton:SetSize(20, 20)
     closeButton:SetPoint("TOPRIGHT", -2, -2)
@@ -2187,6 +2335,7 @@ function ensureConfigFrame()
     frame:Hide()
 
     state.configFrame = frame
+    applyAddonOpacity(storage.opacity)
 
     if InterfaceOptions_AddCategory then
         frame.name = "Consumables List"
