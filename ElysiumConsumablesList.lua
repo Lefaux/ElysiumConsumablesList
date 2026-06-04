@@ -72,6 +72,8 @@ local state = {
     shareTemplateScrollFrame = nil,
     shareTemplateEditBox = nil,
     mainRefreshQueued = false,
+    inventoryCounts = nil,
+    craftCache = nil,
 }
 
 local ensureMainFrame
@@ -80,6 +82,7 @@ local showConfigFrame
 local showSettingsFrame
 local showExportFrame
 local getTemplateLabel
+local shouldSkipInventoryScan
 
 local function makeStorageKey()
     local name = UnitName("player") or "unknown"
@@ -653,6 +656,67 @@ local function countItemInBagRange(itemId, bagStart, bagEnd)
     return total
 end
 
+local function scanContainerItemCounts(bagStart, bagEnd)
+    local counts = {}
+
+    for bag = bagStart, bagEnd do
+        local slotCount = getContainerNumSlotsCompat(bag)
+        for slot = 1, slotCount do
+            local itemId = getContainerItemIDCompat(bag, slot)
+            if itemId then
+                local count = getContainerItemStackCountCompat(bag, slot)
+                counts[itemId] = (counts[itemId] or 0) + count
+            end
+        end
+    end
+
+    return counts
+end
+
+local function mergeCountMaps(target, source)
+    if not source then
+        return target
+    end
+
+    target = target or {}
+    for itemId, count in pairs(source) do
+        target[itemId] = (target[itemId] or 0) + count
+    end
+
+    return target
+end
+
+local isItemCraftable
+
+local function buildInventoryCountCache()
+    local cache = {
+        charCounts = scanContainerItemCounts(0, 4),
+        bankCounts = {},
+    }
+
+    if isBankAccessible() then
+        cache.bankCounts = mergeCountMaps(scanContainerItemCounts(BANK_CONTAINER or -1, BANK_CONTAINER or -1), scanContainerItemCounts(NUM_BAG_SLOTS + 1, NUM_BAG_SLOTS + (NUM_BANKBAGSLOTS or 7)))
+    end
+
+    state.inventoryCounts = cache
+    return cache
+end
+
+local function buildCraftCache(items)
+    local cache = {}
+    local seen = {}
+
+    for _, item in ipairs(items or {}) do
+        if item.source == "craft" and item.spellId and not seen[item.spellId] then
+            seen[item.spellId] = true
+            cache[item.spellId] = isItemCraftable(item)
+        end
+    end
+
+    state.craftCache = cache
+    return cache
+end
+
 local function refreshBankCache(storage)
     if not storage or not isBankAccessible() then
         return
@@ -683,10 +747,9 @@ local function getBankCountForItem(itemId, storage)
         return 0
     end
 
-    if isBankAccessible() then
-        local mainBankCount = countItemInBagRange(itemId, BANK_CONTAINER or -1, BANK_CONTAINER or -1)
-        local bagBankCount = countItemInBagRange(itemId, NUM_BAG_SLOTS + 1, NUM_BAG_SLOTS + (NUM_BANKBAGSLOTS or 7))
-        return mainBankCount + bagBankCount
+    local cache = state.inventoryCounts
+    if cache and cache.bankCounts then
+        return tonumber(cache.bankCounts[itemId]) or 0
     end
 
     if storage and type(storage.bankCounts) == "table" then
@@ -697,7 +760,13 @@ local function getBankCountForItem(itemId, storage)
 end
 
 local function getSingleItemCounts(itemId, includeUses, includeBank)
-    local charCount = countItemInBagRange(itemId, 0, 4)
+    local cache = state.inventoryCounts
+    local charCount = 0
+    if cache and cache.charCounts then
+        charCount = tonumber(cache.charCounts[itemId]) or 0
+    else
+        charCount = countItemInBagRange(itemId, 0, 4)
+    end
     local bankCount = 0
 
     if includeBank then
@@ -730,11 +799,22 @@ local function getItemCounts(item, includeBank)
     local storage = ensureCharacterStorage()
     local charCount = 0
     local bankCount = 0
+    local cache = state.inventoryCounts
+    local charCounts = cache and cache.charCounts or nil
+    local bankCounts = cache and cache.bankCounts or nil
 
     for _, itemId in ipairs(candidates) do
-        charCount = charCount + countItemInBagRange(itemId, 0, 4)
+        if charCounts then
+            charCount = charCount + (tonumber(charCounts[itemId]) or 0)
+        else
+            charCount = charCount + countItemInBagRange(itemId, 0, 4)
+        end
         if includeBank then
-            bankCount = bankCount + getBankCountForItem(itemId, storage)
+            if bankCounts then
+                bankCount = bankCount + (tonumber(bankCounts[itemId]) or 0)
+            else
+                bankCount = bankCount + getBankCountForItem(itemId, storage)
+            end
         end
     end
 
@@ -746,9 +826,14 @@ local function getItemCounts(item, includeBank)
     return charCount, bankCount, charCount + bankCount, true
 end
 
-local function isItemCraftable(item)
+isItemCraftable = function(item)
     if not item or item.source ~= "craft" or not item.spellId then
         return false
+    end
+
+    local craftCache = state.craftCache
+    if craftCache and craftCache[item.spellId] ~= nil then
+        return craftCache[item.spellId]
     end
 
     local spellId = item.spellId
@@ -1226,13 +1311,20 @@ end
 
 local function refreshMainFrame()
     local frame = state.mainFrame
-    if not frame or not state.mainBody or not state.mainHeader then
+    if not frame or not frame:IsShown() or not state.mainBody or not state.mainHeader then
         return
     end
 
     local storage = ensureCharacterStorage()
-    if isBankAccessible() then
-        refreshBankCache(storage)
+    if shouldSkipInventoryScan() then
+        state.inventoryCounts = state.inventoryCounts or {
+            charCounts = {},
+            bankCounts = {},
+        }
+        state.craftCache = state.craftCache or {}
+    else
+        buildInventoryCountCache()
+        buildCraftCache(storage.items)
     end
     local rows, stats = collectMainRows(storage)
     state.mainVisibleRowCount = #rows
@@ -1263,23 +1355,40 @@ local function refreshMainFrame()
 end
 
 local function shouldQueueMainRefresh()
-    return (state.mainFrame and state.mainFrame:IsShown())
-        or (state.exportFrame and state.exportFrame:IsShown())
-        or (state.configFrame and state.configFrame:IsShown())
+    return state.mainFrame and state.mainFrame:IsShown()
+end
+
+shouldSkipInventoryScan = function()
+    if type(IsInInstance) == "function" then
+        local inInstance, instanceType = IsInInstance()
+        if inInstance and instanceType and instanceType ~= "none" then
+            return true
+        end
+    end
+
+    if type(UnitIsDeadOrGhost) == "function" and UnitIsDeadOrGhost("player") then
+        return true
+    end
+
+    return false
 end
 
 local function queueMainRefresh()
-    if not shouldQueueMainRefresh() or state.mainRefreshQueued then
+    if shouldSkipInventoryScan() or not shouldQueueMainRefresh() or state.mainRefreshQueued then
         return
     end
 
     state.mainRefreshQueued = true
-    C_Timer.After(0.05, function()
+    C_Timer.After(0.15, function()
         state.mainRefreshQueued = false
-        if shouldQueueMainRefresh() then
+        if shouldQueueMainRefresh() and not shouldSkipInventoryScan() then
             refreshMainFrame()
         end
     end)
+end
+
+local function requestMainRefresh()
+    queueMainRefresh()
 end
 
 local function getSavedMainPoint(storage)
@@ -2460,7 +2569,6 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
         if state.configFrame then
             state.configFrame:Hide()
         end
-        refreshMainFrame()
         if ensureCharacterStorage().mainVisible == true then
             setMainFrameVisible(true)
         else
@@ -2470,21 +2578,23 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1)
     end
 
     if event == "PLAYER_ENTERING_WORLD" then
-        refreshMainFrame()
+        if state.mainFrame and state.mainFrame:IsShown() then
+            requestMainRefresh()
+        end
         return
     end
 
     if event == "BAG_UPDATE_DELAYED" or event == "BANKFRAME_OPENED" or event == "BANKFRAME_CLOSED" or event == "PLAYERBANKSLOTS_CHANGED" then
-        if event == "BANKFRAME_OPENED" or event == "PLAYERBANKSLOTS_CHANGED" then
-            local storage = ensureCharacterStorage()
-            refreshBankCache(storage)
+        if state.mainFrame and state.mainFrame:IsShown() then
+            queueMainRefresh()
         end
-        queueMainRefresh()
         return
     end
 
     if event == "GET_ITEM_INFO_RECEIVED" then
-        refreshConfigFrame()
-        refreshMainFrame()
+        if state.mainFrame and state.mainFrame:IsShown() then
+            refreshConfigFrame()
+            requestMainRefresh()
+        end
     end
 end)
