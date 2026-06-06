@@ -365,6 +365,10 @@ local function ensureCharacterStorage()
         width = MAIN_FRAME_WIDTH,
         height = 340,
     }
+    storage.configSize = storage.configSize or {
+        width = CONFIG_FRAME_WIDTH,
+        height = CONFIG_FRAME_HEIGHT,
+    }
     if storage.mainVisible == nil then
         storage.mainVisible = true
     end
@@ -1435,6 +1439,13 @@ local function saveMainFrameSize(frame)
     storage.mainSize.height = math.floor((frame:GetHeight() or 340) + 0.5)
 end
 
+local function saveConfigFrameSize(frame)
+    local storage = ensureCharacterStorage()
+    storage.configSize = storage.configSize or {}
+    storage.configSize.width = math.floor((frame:GetWidth() or CONFIG_FRAME_WIDTH) + 0.5)
+    storage.configSize.height = math.floor((frame:GetHeight() or CONFIG_FRAME_HEIGHT) + 0.5)
+end
+
 local function setMainFrameVisible(visible)
     local storage = ensureCharacterStorage()
     storage.mainVisible = visible and true or false
@@ -2249,7 +2260,8 @@ function ensureConfigFrame()
     end
 
     local frame = CreateFrame("Frame", addonName .. "ConfigFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(CONFIG_FRAME_WIDTH, CONFIG_FRAME_HEIGHT)
+    local savedSize = ensureCharacterStorage().configSize or {}
+    frame:SetSize(savedSize.width or CONFIG_FRAME_WIDTH, savedSize.height or CONFIG_FRAME_HEIGHT)
     frame:SetBackdrop({
         bgFile = OPAQUE_BG_TEXTURE,
         edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
@@ -2260,12 +2272,22 @@ function ensureConfigFrame()
     frame:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
+    frame:SetResizable(true)
+    if frame.SetResizeBounds then
+        frame:SetResizeBounds(680, 420)
+    elseif frame.SetMinResize then
+        frame:SetMinResize(680, 420)
+    end
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         saveFramePoint(self, "configPoint")
+    end)
+    frame:SetScript("OnSizeChanged", function(self)
+        saveConfigFrameSize(self)
+        refreshConfigFrame()
     end)
 
     local storage = ensureCharacterStorage()
@@ -2320,65 +2342,49 @@ function ensureConfigFrame()
     end)
     frame.addButton = addButton
 
-    local saveTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    saveTemplateButton:SetSize(184, 22)
-    saveTemplateButton:SetPoint("BOTTOMLEFT", 14, 40)
-    saveTemplateButton:SetText("Save as personal template")
-    saveTemplateButton:SetScript("OnClick", function()
-        registerSaveTemplatePopup()
-        local storage = ensureCharacterStorage()
-        local defaultName = getPersonalTemplateDisplayName(storage)
-        StaticPopup_Show("ELYSIUMCONSUMABLESLIST_SAVE_TEMPLATE", nil, nil, {
-            defaultName = defaultName,
-        })
-    end)
-    frame.saveTemplateButton = saveTemplateButton
-    state.configSaveTemplateButton = saveTemplateButton
+    local footerFrame = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    footerFrame:SetPoint("LEFT", 12, 0)
+    footerFrame:SetPoint("RIGHT", -12, 0)
+    footerFrame:SetPoint("BOTTOM", 0, 8)
+    footerFrame:SetHeight(92)
+    footerFrame:SetBackdrop({
+        bgFile = OPAQUE_BG_TEXTURE,
+        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+        tile = true,
+        edgeSize = 16,
+    })
+    footerFrame:SetBackdropColor(0.07, 0.07, 0.07, 1)
+    footerFrame:SetBackdropBorderColor(0.35, 0.35, 0.35, 1)
 
-    local deleteTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    deleteTemplateButton:SetSize(164, 22)
-    deleteTemplateButton:SetPoint("LEFT", saveTemplateButton, "RIGHT", 8, 0)
-    deleteTemplateButton:SetText("Delete personal template")
-    deleteTemplateButton:SetScript("OnClick", function()
-        local storage = ensureCharacterStorage()
-        local templateKey = storage.templateKey or ""
-        if string.sub(templateKey, 1, 9) ~= "personal_" then
-            return
-        end
-
-        if deletePersonalTemplate(templateKey) then
-            local fallbackKey = getDefaultTemplateKey() or "fury_warrior"
-            storage.templateKey = fallbackKey
-            applyTemplate(fallbackKey, true)
-            refreshTemplateDropdownText(frame.templateDropdown)
-            refreshTemplateManagementButtons(frame)
-            refreshConfigFrame()
-            refreshMainFrame()
-        end
-    end)
-    frame.deleteTemplateButton = deleteTemplateButton
-
-    local shareTemplateButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    shareTemplateButton:SetSize(218, 22)
-    shareTemplateButton:SetPoint("LEFT", deleteTemplateButton, "RIGHT", 8, 0)
-    shareTemplateButton:SetText("Share template with the world")
-    shareTemplateButton:SetScript("OnClick", function()
-        local popup = ensureTemplateShareFrame()
-        refreshTemplateShareFrame()
-        popup:Show()
-        popup:Raise()
-    end)
-    frame.shareTemplateButton = shareTemplateButton
-    state.configShareTemplateButton = shareTemplateButton
-
-    local settingsButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    local settingsButton = CreateFrame("Button", nil, footerFrame, "UIPanelButtonTemplate")
     settingsButton:SetSize(92, 22)
-    settingsButton:SetPoint("BOTTOMRIGHT", -14, 40)
+    settingsButton:SetPoint("TOPRIGHT", -6, -10)
     settingsButton:SetText("Settings")
     settingsButton:SetScript("OnClick", function()
         showSettingsFrame()
     end)
     frame.settingsButton = settingsButton
+
+    local resizeGrip = CreateFrame("Button", nil, frame)
+    resizeGrip:SetSize(16, 16)
+    resizeGrip:SetPoint("BOTTOMRIGHT", -2, 2)
+    resizeGrip:EnableMouse(true)
+    resizeGrip:RegisterForDrag("LeftButton")
+    if resizeGrip.SetFrameLevel then
+        resizeGrip:SetFrameLevel(frame:GetFrameLevel() + 10)
+    end
+    resizeGrip:SetScript("OnDragStart", function()
+        frame:StartSizing("BOTTOMRIGHT")
+    end)
+    resizeGrip:SetScript("OnDragStop", function()
+        frame:StopMovingOrSizing()
+        saveConfigFrameSize(frame)
+        refreshConfigFrame()
+    end)
+    local gripTexture = resizeGrip:CreateTexture(nil, "ARTWORK")
+    gripTexture:SetAllPoints()
+    gripTexture:SetTexture("Interface\\CHATFRAME\\UI-ChatIM-SizeGrabber-Up")
+    frame.resizeGrip = resizeGrip
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     closeButton:SetSize(20, 20)
@@ -2390,7 +2396,7 @@ function ensureConfigFrame()
 
     local scrollFrame = CreateFrame("ScrollFrame", addonName .. "ConfigScrollFrame", frame, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 12, -110)
-    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 48)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, footerFrame:GetHeight() + 20)
     state.configScrollFrame = scrollFrame
 
     local scrollChild = CreateFrame("Frame", nil, scrollFrame)
@@ -2423,8 +2429,59 @@ function ensureConfigFrame()
     actionHeader:SetPoint("LEFT", 456, 0)
     actionHeader:SetText("Action")
 
-    local hideOnCharacter = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
-    hideOnCharacter:SetPoint("BOTTOMLEFT", 14, 14)
+    local saveTemplateButton = CreateFrame("Button", nil, footerFrame, "UIPanelButtonTemplate")
+    saveTemplateButton:SetSize(184, 22)
+    saveTemplateButton:SetPoint("TOPLEFT", 2, -10)
+    saveTemplateButton:SetText("Save as personal template")
+    saveTemplateButton:SetScript("OnClick", function()
+        registerSaveTemplatePopup()
+        local storage = ensureCharacterStorage()
+        local defaultName = getPersonalTemplateDisplayName(storage)
+        StaticPopup_Show("ELYSIUMCONSUMABLESLIST_SAVE_TEMPLATE", nil, nil, {
+            defaultName = defaultName,
+        })
+    end)
+    frame.saveTemplateButton = saveTemplateButton
+    state.configSaveTemplateButton = saveTemplateButton
+
+    local deleteTemplateButton = CreateFrame("Button", nil, footerFrame, "UIPanelButtonTemplate")
+    deleteTemplateButton:SetSize(164, 22)
+    deleteTemplateButton:SetPoint("LEFT", saveTemplateButton, "RIGHT", 8, 0)
+    deleteTemplateButton:SetText("Delete personal template")
+    deleteTemplateButton:SetScript("OnClick", function()
+        local storage = ensureCharacterStorage()
+        local templateKey = storage.templateKey or ""
+        if string.sub(templateKey, 1, 9) ~= "personal_" then
+            return
+        end
+
+        if deletePersonalTemplate(templateKey) then
+            local fallbackKey = getDefaultTemplateKey() or "fury_warrior"
+            storage.templateKey = fallbackKey
+            applyTemplate(fallbackKey, true)
+            refreshTemplateDropdownText(frame.templateDropdown)
+            refreshTemplateManagementButtons(frame)
+            refreshConfigFrame()
+            refreshMainFrame()
+        end
+    end)
+    frame.deleteTemplateButton = deleteTemplateButton
+
+    local shareTemplateButton = CreateFrame("Button", nil, footerFrame, "UIPanelButtonTemplate")
+    shareTemplateButton:SetSize(218, 22)
+    shareTemplateButton:SetPoint("LEFT", deleteTemplateButton, "RIGHT", 8, 0)
+    shareTemplateButton:SetText("Share template with the world")
+    shareTemplateButton:SetScript("OnClick", function()
+        local popup = ensureTemplateShareFrame()
+        refreshTemplateShareFrame()
+        popup:Show()
+        popup:Raise()
+    end)
+    frame.shareTemplateButton = shareTemplateButton
+    state.configShareTemplateButton = shareTemplateButton
+
+    local hideOnCharacter = CreateFrame("CheckButton", nil, footerFrame, "UICheckButtonTemplate")
+    hideOnCharacter:SetPoint("BOTTOMLEFT", 2, 10)
     hideOnCharacter:SetScript("OnClick", function(self)
         local storage = ensureCharacterStorage()
         storage.hideOnCharacter = self:GetChecked() and true or false
@@ -2433,7 +2490,7 @@ function ensureConfigFrame()
     end)
     frame.hideOnCharacter = hideOnCharacter
 
-    local hideLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local hideLabel = footerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hideLabel:SetPoint("LEFT", hideOnCharacter, "RIGHT", 6, 0)
     hideLabel:SetText("Hide items if on character")
 
@@ -2445,6 +2502,7 @@ function ensureConfigFrame()
 
     state.configFrame = frame
     applyAddonOpacity(storage.opacity)
+    refreshConfigFrame()
 
     if InterfaceOptions_AddCategory then
         frame.name = "Consumables List"
