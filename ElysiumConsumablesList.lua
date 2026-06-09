@@ -1457,6 +1457,7 @@ local function setMainFrameVisible(visible)
 
     if visible then
         frame:Show()
+        refreshMainFrame()
     else
         frame:Hide()
     end
@@ -2539,7 +2540,6 @@ end
 
 showMainFrame = function()
     local frame = ensureMainFrame()
-    refreshMainFrame()
     setMainFrameVisible(true)
 end
 
