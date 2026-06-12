@@ -21,7 +21,6 @@ local NUM_BAG_SLOTS = 4
 local DEFAULT_ROWS = 1
 local MAIN_FRAME_WIDTH = 640
 local MAIN_BODY_WIDTH = 600
-local MAIN_MIN_WIDTH = 620
 local MAIN_MIN_HEIGHT = 240
 local RESIZE_GRIP_SIZE = 16
 local CONFIG_FRAME_WIDTH = 760
@@ -74,6 +73,7 @@ local state = {
     mainRefreshQueued = false,
     inventoryCounts = nil,
     craftCache = nil,
+    mainColumnWidths = nil,
 }
 
 local ensureMainFrame
@@ -970,27 +970,18 @@ local function ensureMainRows(count)
 
         local status = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         status:SetPoint("LEFT", 4, 0)
-        status:SetWidth(48)
         status:SetJustifyH("LEFT")
         row.status = status
 
         local item = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         item:SetPoint("LEFT", status, "RIGHT", 6, 0)
-        item:SetWidth(220)
         item:SetJustifyH("LEFT")
         row.item = item
 
         local progress = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         progress:SetPoint("LEFT", item, "RIGHT", 6, 0)
-        progress:SetWidth(160)
         progress:SetJustifyH("LEFT")
         row.progress = progress
-
-        local source = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        source:SetPoint("LEFT", progress, "RIGHT", 6, 0)
-        source:SetWidth(80)
-        source:SetJustifyH("LEFT")
-        row.source = source
 
         state.mainRows[index] = row
     end
@@ -1010,8 +1001,6 @@ local function setMainRowValues(row, item, data)
     row.item:SetTextColor(r, g, b)
     row.progress:SetText(data.progressText)
     row.progress:SetTextColor(r, g, b)
-    row.source:SetText(data.sourceText)
-    row.source:SetTextColor(0.8, 0.8, 0.8)
     row:Show()
 end
 
@@ -1025,7 +1014,6 @@ local function setMainGroupRowValues(row, label)
     row.item:SetText(label or "")
     row.item:SetTextColor(0.9, 0.9, 0.9)
     row.progress:SetText("")
-    row.source:SetText("")
     row:Show()
 end
 
@@ -1275,15 +1263,27 @@ local function layoutMainFrame()
     local frame = state.mainFrame
     local title = state.mainTitle
     local body = state.mainBody
-    local header = state.mainHeader
     local scrollFrame = state.mainScrollFrame
     local scrollChild = state.mainScrollChild
 
-    if not frame or not title or not body or not header or not scrollFrame or not scrollChild or not state.mainConfigButton then
+    if not frame or not title or not body or not scrollFrame or not scrollChild or not state.mainConfigButton then
         return
     end
 
-    local usableWidth = math.max(MAIN_BODY_WIDTH, frame:GetWidth() - 40)
+    local widths = state.mainColumnWidths or {}
+    local statusWidth = math.max(32, math.floor((widths.status or 40) + 0.5))
+    local itemWidth = math.max(80, math.floor((widths.item or 120) + 0.5))
+    local progressWidth = math.max(72, math.floor((widths.progress or 100) + 0.5))
+    local columnSpacing = 6
+    local contentWidth = 8 + statusWidth + columnSpacing + itemWidth + columnSpacing + progressWidth
+    local footerWidth = 12 + 108 + 8 + 92 + 12
+    local titleWidth = (title:GetStringWidth() or 0) + 28
+    local desiredWidth = math.max(contentWidth + 44, footerWidth, titleWidth)
+
+    if math.abs((frame:GetWidth() or 0) - desiredWidth) > 0.5 then
+        frame:SetWidth(desiredWidth)
+    end
+    local usableWidth = math.max(contentWidth + 12, (frame:GetWidth() or desiredWidth) - 40)
 
     title:ClearAllPoints()
     title:SetPoint("TOPLEFT", 14, -12)
@@ -1292,21 +1292,28 @@ local function layoutMainFrame()
     body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     body:SetWidth(usableWidth)
 
-    header:ClearAllPoints()
-    header:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
-    header:SetWidth(usableWidth)
-
     scrollFrame:ClearAllPoints()
-    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 40)
-    local scrollWidth = math.max(MAIN_BODY_WIDTH, (frame:GetWidth() or MAIN_BODY_WIDTH) - 44)
-    scrollChild:SetWidth(scrollWidth)
+    scrollChild:SetWidth(contentWidth)
 
     for index, row in ipairs(state.mainRows) do
         row:ClearAllPoints()
-        row:SetWidth(scrollWidth)
+        row:SetWidth(contentWidth)
         row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
         row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, 0)
+
+        row.status:ClearAllPoints()
+        row.status:SetPoint("LEFT", 4, 0)
+        row.status:SetWidth(statusWidth)
+
+        row.item:ClearAllPoints()
+        row.item:SetPoint("LEFT", row.status, "RIGHT", columnSpacing, 0)
+        row.item:SetWidth(itemWidth)
+
+        row.progress:ClearAllPoints()
+        row.progress:SetPoint("LEFT", row.item, "RIGHT", columnSpacing, 0)
+        row.progress:SetWidth(progressWidth)
     end
 
     local contentHeight = math.max(ROW_HEIGHT, (state.mainVisibleRowCount or 0) * ROW_HEIGHT)
@@ -1315,7 +1322,7 @@ end
 
 local function refreshMainFrame()
     local frame = state.mainFrame
-    if not frame or not frame:IsShown() or not state.mainBody or not state.mainHeader then
+    if not frame or not frame:IsShown() or not state.mainBody then
         return
     end
 
@@ -1348,12 +1355,21 @@ local function refreshMainFrame()
         state.mainRows[index]:Hide()
     end
 
-    if #rows > 0 then
-        state.mainHeader:Show()
-        state.mainHeader:SetPoint("TOPLEFT", state.mainBody, "BOTTOMLEFT", 0, -8)
-    else
-        state.mainHeader:Hide()
+    local maxStatusWidth = 0
+    local maxItemWidth = 0
+    local maxProgressWidth = 0
+    for _, row in ipairs(state.mainRows) do
+        if row:IsShown() then
+            maxStatusWidth = math.max(maxStatusWidth, row.status:GetStringWidth() or 0)
+            maxItemWidth = math.max(maxItemWidth, row.item:GetStringWidth() or 0)
+            maxProgressWidth = math.max(maxProgressWidth, row.progress:GetStringWidth() or 0)
+        end
     end
+    state.mainColumnWidths = {
+        status = maxStatusWidth + 6,
+        item = maxItemWidth + 6,
+        progress = maxProgressWidth + 6,
+    }
 
     layoutMainFrame()
 end
@@ -1622,9 +1638,9 @@ ensureMainFrame = function()
     frame:RegisterForDrag("LeftButton")
     frame:SetResizable(true)
     if frame.SetResizeBounds then
-        frame:SetResizeBounds(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+        frame:SetResizeBounds(1, MAIN_MIN_HEIGHT)
     elseif frame.SetMinResize then
-        frame:SetMinResize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+        frame:SetMinResize(1, MAIN_MIN_HEIGHT)
     end
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self)
@@ -1652,32 +1668,8 @@ ensureMainFrame = function()
     body:SetWidth(MAIN_BODY_WIDTH)
     state.mainBody = body
 
-    local header = CreateFrame("Frame", nil, frame)
-    header:SetHeight(MAIN_HEADER_HEIGHT)
-    state.mainHeader = header
-
-    local stateHeader = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    stateHeader:SetPoint("LEFT", 6, 0)
-    stateHeader:SetWidth(72)
-    stateHeader:SetText("State")
-
-    local itemHeader = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    itemHeader:SetPoint("LEFT", stateHeader, "RIGHT", 8, 0)
-    itemHeader:SetWidth(220)
-    itemHeader:SetText("Item")
-
-    local progressHeader = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    progressHeader:SetPoint("LEFT", itemHeader, "RIGHT", 8, 0)
-    progressHeader:SetWidth(160)
-    progressHeader:SetText("Progress")
-
-    local sourceHeader = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    sourceHeader:SetPoint("LEFT", progressHeader, "RIGHT", 8, 0)
-    sourceHeader:SetWidth(80)
-    sourceHeader:SetText("Source")
-
     local scrollFrame = CreateFrame("ScrollFrame", addonName .. "MainScrollFrame", frame, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 40)
     state.mainScrollFrame = scrollFrame
 
@@ -1718,7 +1710,7 @@ ensureMainFrame = function()
     resizeGrip:EnableMouse(true)
     resizeGrip:RegisterForDrag("LeftButton")
     resizeGrip:SetScript("OnDragStart", function()
-        frame:StartSizing("BOTTOMRIGHT")
+        frame:StartSizing("BOTTOM")
     end)
     resizeGrip:SetScript("OnDragStop", function()
         frame:StopMovingOrSizing()
@@ -1728,6 +1720,7 @@ ensureMainFrame = function()
     local gripTexture = resizeGrip:CreateTexture(nil, "ARTWORK")
     gripTexture:SetAllPoints()
     gripTexture:SetTexture("Interface\\CHATFRAME\\UI-ChatIM-SizeGrabber-Up")
+    gripTexture:SetVertexColor(1, 1, 1, 0.65)
     state.mainResizeGrip = resizeGrip
 
     state.mainFrame = frame
