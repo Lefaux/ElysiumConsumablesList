@@ -692,14 +692,71 @@ end
 
 local isItemCraftable
 
-local function buildInventoryCountCache()
+local function getItemCountCompat(itemId, includeBank)
+    if C_Item and C_Item.GetItemCount then
+        local success, count = pcall(C_Item.GetItemCount, itemId, includeBank == true, false, false)
+        if success and type(count) == "number" then
+            return count
+        end
+    end
+
+    if GetItemCount then
+        local success, count = pcall(GetItemCount, itemId, includeBank == true, false)
+        if success and type(count) == "number" then
+            return count
+        end
+    end
+
+    return nil
+end
+
+local function getCachedBankItemCount(itemId, charCount)
+    local totalWithBank = getItemCountCompat(itemId, true)
+    if totalWithBank == nil then
+        return nil
+    end
+
+    -- GetItemCount(..., true) includes carried items, so subtract the bag count
+    -- to obtain the bank-only value. Unlike container scans, this works while
+    -- the bank frame is closed using the bank data cached by the client.
+    return math.max(0, totalWithBank - (tonumber(charCount) or 0))
+end
+
+local function buildInventoryCountCache(storage)
     local cache = {
         charCounts = scanContainerItemCounts(0, 4),
         bankCounts = {},
     }
 
-    if isBankAccessible() then
+    local uniqueIds = {}
+    for _, item in ipairs((storage and storage.items) or {}) do
+        if type(item.itemIds) == "table" and #item.itemIds > 0 then
+            for _, itemId in ipairs(item.itemIds) do
+                uniqueIds[itemId] = true
+            end
+        elseif item.itemId then
+            uniqueIds[item.itemId] = true
+        end
+    end
+
+    local usedItemCountAPI = false
+    for itemId in pairs(uniqueIds) do
+        local bankCount = getCachedBankItemCount(itemId, cache.charCounts[itemId])
+        if bankCount ~= nil then
+            cache.bankCounts[itemId] = bankCount
+            usedItemCountAPI = true
+        end
+    end
+
+    if not usedItemCountAPI and isBankAccessible() then
         cache.bankCounts = mergeCountMaps(scanContainerItemCounts(BANK_CONTAINER or -1, BANK_CONTAINER or -1), scanContainerItemCounts(NUM_BAG_SLOTS + 1, NUM_BAG_SLOTS + (NUM_BANKBAGSLOTS or 7)))
+    end
+
+    if storage then
+        storage.bankCounts = storage.bankCounts or {}
+        for itemId, count in pairs(cache.bankCounts) do
+            storage.bankCounts[itemId] = count
+        end
     end
 
     state.inventoryCounts = cache
@@ -722,7 +779,7 @@ local function buildCraftCache(items)
 end
 
 local function refreshBankCache(storage)
-    if not storage or not isBankAccessible() then
+    if not storage then
         return
     end
 
@@ -740,9 +797,15 @@ local function refreshBankCache(storage)
     end
 
     for itemId in pairs(uniqueIds) do
-        local mainBankCount = countItemInBagRange(itemId, BANK_CONTAINER or -1, BANK_CONTAINER or -1)
-        local bagBankCount = countItemInBagRange(itemId, NUM_BAG_SLOTS + 1, NUM_BAG_SLOTS + (NUM_BANKBAGSLOTS or 7))
-        storage.bankCounts[itemId] = mainBankCount + bagBankCount
+        local charCount = countItemInBagRange(itemId, 0, 4)
+        local bankCount = getCachedBankItemCount(itemId, charCount)
+        if bankCount ~= nil then
+            storage.bankCounts[itemId] = bankCount
+        elseif isBankAccessible() then
+            local mainBankCount = countItemInBagRange(itemId, BANK_CONTAINER or -1, BANK_CONTAINER or -1)
+            local bagBankCount = countItemInBagRange(itemId, NUM_BAG_SLOTS + 1, NUM_BAG_SLOTS + (NUM_BANKBAGSLOTS or 7))
+            storage.bankCounts[itemId] = mainBankCount + bagBankCount
+        end
     end
 end
 
@@ -904,15 +967,22 @@ local function getItemStateData(item, includeBank)
 
     local missing = math.max(desired - totalCount, 0)
     local progressText
+    local function formatMissing(action)
+        if bankCount > 0 then
+            return string.format("%s %d, %d in bank", action, missing, bankCount)
+        end
+
+        return string.format("%s %d", action, missing)
+    end
 
     if stateKey == "green" then
         progressText = string.format("%d/%d on char", charCount, desired)
     elseif stateKey == "yellow" then
         progressText = string.format("%d/%d on char, %d in bank", charCount, desired, bankCount)
     elseif stateKey == "gold" then
-        progressText = string.format("craft %d", missing)
+        progressText = formatMissing("craft")
     else
-        progressText = string.format("buy %d", missing)
+        progressText = formatMissing("buy")
     end
 
     local sourceText = "Buy/Loot"
@@ -924,7 +994,7 @@ local function getItemStateData(item, includeBank)
         stateKey = "red"
         stateLabel = "BUY"
         stateColor = "ff5555"
-        progressText = string.format("buy %d", missing)
+        progressText = formatMissing("buy")
     end
 
     return {
@@ -968,20 +1038,16 @@ local function ensureMainRows(count)
         row:SetHeight(ROW_HEIGHT)
         row:SetWidth(MAIN_BODY_WIDTH)
 
-        local status = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        status:SetPoint("LEFT", 4, 0)
-        status:SetJustifyH("LEFT")
-        row.status = status
-
         local item = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        item:SetPoint("LEFT", status, "RIGHT", 6, 0)
+        item:SetPoint("LEFT", 4, 0)
         item:SetJustifyH("LEFT")
         row.item = item
 
-        local progress = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        progress:SetPoint("LEFT", item, "RIGHT", 6, 0)
-        progress:SetJustifyH("LEFT")
-        row.progress = progress
+        for _, column in ipairs({"have", "bank", "buy"}) do
+            local value = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            value:SetJustifyH("RIGHT")
+            row[column] = value
+        end
 
         state.mainRows[index] = row
     end
@@ -995,12 +1061,15 @@ local function setMainRowValues(row, item, data)
     end
 
     local r, g, b = getColorComponents(data.stateColor)
-    row.status:SetText(data.stateLabel)
-    row.status:SetTextColor(r, g, b)
     row.item:SetText(getItemDisplayName(item))
     row.item:SetTextColor(r, g, b)
-    row.progress:SetText(data.progressText)
-    row.progress:SetTextColor(r, g, b)
+    row.have:SetText(tostring(data.charCount or 0))
+    row.have:SetTextColor(0.2, 0.87, 0.33)
+    row.bank:SetText(tostring(data.bankCount or 0))
+    row.bank:SetTextColor(1, 1, 0)
+    local needsMore = data.stateKey == "red" or data.stateKey == "gold"
+    row.buy:SetText(needsMore and tostring(math.max((data.desired or 0) - (data.totalCount or 0), 0)) or "")
+    row.buy:SetTextColor(1, 0.33, 0.33)
     row:Show()
 end
 
@@ -1009,11 +1078,11 @@ local function setMainGroupRowValues(row, label)
         return
     end
 
-    row.status:SetText("Group")
-    row.status:SetTextColor(0.6, 0.6, 0.6)
     row.item:SetText(label or "")
     row.item:SetTextColor(0.9, 0.9, 0.9)
-    row.progress:SetText("")
+    row.have:SetText("")
+    row.bank:SetText("")
+    row.buy:SetText("")
     row:Show()
 end
 
@@ -1266,16 +1335,19 @@ local function layoutMainFrame()
     local scrollFrame = state.mainScrollFrame
     local scrollChild = state.mainScrollChild
 
-    if not frame or not title or not body or not scrollFrame or not scrollChild or not state.mainConfigButton then
+    local header = state.mainHeader
+
+    if not frame or not title or not body or not header or not scrollFrame or not scrollChild or not state.mainConfigButton then
         return
     end
 
     local widths = state.mainColumnWidths or {}
-    local statusWidth = math.max(32, math.floor((widths.status or 40) + 0.5))
     local itemWidth = math.max(80, math.floor((widths.item or 120) + 0.5))
-    local progressWidth = math.max(72, math.floor((widths.progress or 100) + 0.5))
+    local haveWidth = math.max(34, math.floor((widths.have or 34) + 0.5))
+    local bankWidth = math.max(34, math.floor((widths.bank or 34) + 0.5))
+    local buyWidth = math.max(28, math.floor((widths.buy or 28) + 0.5))
     local columnSpacing = 6
-    local contentWidth = 8 + statusWidth + columnSpacing + itemWidth + columnSpacing + progressWidth
+    local contentWidth = 8 + itemWidth + columnSpacing + haveWidth + columnSpacing + bankWidth + columnSpacing + buyWidth
     local footerWidth = 12 + 108 + 8 + 92 + 12
     local titleWidth = (title:GetStringWidth() or 0) + 28
     local desiredWidth = math.max(contentWidth + 44, footerWidth, titleWidth)
@@ -1292,10 +1364,26 @@ local function layoutMainFrame()
     body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     body:SetWidth(usableWidth)
 
+    header:ClearAllPoints()
+    header:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
+    header:SetWidth(contentWidth)
+    header:SetHeight(MAIN_HEADER_HEIGHT)
+
     scrollFrame:ClearAllPoints()
-    scrollFrame:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 40)
     scrollChild:SetWidth(contentWidth)
+
+    header.item:ClearAllPoints()
+    header.item:SetPoint("LEFT", 4, 0)
+    header.item:SetWidth(itemWidth)
+    local previous = header.item
+    for _, column in ipairs({"have", "bank", "buy"}) do
+        header[column]:ClearAllPoints()
+        header[column]:SetPoint("LEFT", previous, "RIGHT", columnSpacing, 0)
+        header[column]:SetWidth(column == "have" and haveWidth or column == "bank" and bankWidth or buyWidth)
+        previous = header[column]
+    end
 
     for index, row in ipairs(state.mainRows) do
         row:ClearAllPoints()
@@ -1303,17 +1391,16 @@ local function layoutMainFrame()
         row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
         row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, 0)
 
-        row.status:ClearAllPoints()
-        row.status:SetPoint("LEFT", 4, 0)
-        row.status:SetWidth(statusWidth)
-
         row.item:ClearAllPoints()
-        row.item:SetPoint("LEFT", row.status, "RIGHT", columnSpacing, 0)
+        row.item:SetPoint("LEFT", 4, 0)
         row.item:SetWidth(itemWidth)
-
-        row.progress:ClearAllPoints()
-        row.progress:SetPoint("LEFT", row.item, "RIGHT", columnSpacing, 0)
-        row.progress:SetWidth(progressWidth)
+        previous = row.item
+        for _, column in ipairs({"have", "bank", "buy"}) do
+            row[column]:ClearAllPoints()
+            row[column]:SetPoint("LEFT", previous, "RIGHT", columnSpacing, 0)
+            row[column]:SetWidth(column == "have" and haveWidth or column == "bank" and bankWidth or buyWidth)
+            previous = row[column]
+        end
     end
 
     local contentHeight = math.max(ROW_HEIGHT, (state.mainVisibleRowCount or 0) * ROW_HEIGHT)
@@ -1334,7 +1421,7 @@ local function refreshMainFrame()
         }
         state.craftCache = state.craftCache or {}
     else
-        buildInventoryCountCache()
+        buildInventoryCountCache(storage)
         buildCraftCache(storage.items)
     end
     local rows, stats = collectMainRows(storage)
@@ -1355,20 +1442,23 @@ local function refreshMainFrame()
         state.mainRows[index]:Hide()
     end
 
-    local maxStatusWidth = 0
     local maxItemWidth = 0
-    local maxProgressWidth = 0
+    local maxHaveWidth = state.mainHeader.have:GetStringWidth() or 0
+    local maxBankWidth = state.mainHeader.bank:GetStringWidth() or 0
+    local maxBuyWidth = state.mainHeader.buy:GetStringWidth() or 0
     for _, row in ipairs(state.mainRows) do
         if row:IsShown() then
-            maxStatusWidth = math.max(maxStatusWidth, row.status:GetStringWidth() or 0)
             maxItemWidth = math.max(maxItemWidth, row.item:GetStringWidth() or 0)
-            maxProgressWidth = math.max(maxProgressWidth, row.progress:GetStringWidth() or 0)
+            maxHaveWidth = math.max(maxHaveWidth, row.have:GetStringWidth() or 0)
+            maxBankWidth = math.max(maxBankWidth, row.bank:GetStringWidth() or 0)
+            maxBuyWidth = math.max(maxBuyWidth, row.buy:GetStringWidth() or 0)
         end
     end
     state.mainColumnWidths = {
-        status = maxStatusWidth + 6,
         item = maxItemWidth + 6,
-        progress = maxProgressWidth + 6,
+        have = maxHaveWidth + 6,
+        bank = maxBankWidth + 6,
+        buy = maxBuyWidth + 6,
     }
 
     layoutMainFrame()
@@ -1668,8 +1758,19 @@ ensureMainFrame = function()
     body:SetWidth(MAIN_BODY_WIDTH)
     state.mainBody = body
 
+    local header = CreateFrame("Frame", nil, frame)
+    header:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
+    header:SetSize(MAIN_BODY_WIDTH, MAIN_HEADER_HEIGHT)
+    for _, column in ipairs({"item", "have", "bank", "buy"}) do
+        local label = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetText(column == "item" and "Item" or column:sub(1, 1):upper() .. column:sub(2))
+        label:SetJustifyH(column == "item" and "LEFT" or "RIGHT")
+        header[column] = label
+    end
+    state.mainHeader = header
+
     local scrollFrame = CreateFrame("ScrollFrame", addonName .. "MainScrollFrame", frame, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -8)
+    scrollFrame:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 40)
     state.mainScrollFrame = scrollFrame
 
